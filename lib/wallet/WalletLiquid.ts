@@ -22,9 +22,7 @@ class WalletLiquid extends Wallet {
   }
 
   public get supportsDiscountCT(): boolean {
-    return !(this.network as Network).genesisBlockHash.equals(
-      networks.liquid.genesisBlockHash,
-    );
+    return true;
   }
 
   public deriveBlindingKeyFromScript = (outputScript: Buffer) => {

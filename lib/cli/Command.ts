@@ -151,7 +151,7 @@ export const getWalletStub = (
   ({
     type,
     network,
-    supportsDiscountCT: discountCT || false,
+    supportsDiscountCT: discountCT || true,
     decodeAddress: () => toOutputScript(type, destinationAddress, network),
     deriveBlindingKeyFromScript: () => ({
       privateKey: parseBlindingKey(type, blindingKey!),

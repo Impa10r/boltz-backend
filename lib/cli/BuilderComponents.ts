@@ -76,6 +76,6 @@ export default {
   discountCT: {
     describe: 'whether discount CT should be used',
     type: 'boolean',
-    default: false,
+    default: true,
   },
 };
