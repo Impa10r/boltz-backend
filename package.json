@@ -60,7 +60,7 @@
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BoltzExchange/boltz-backend"
+    "url": "git+https://github.com/impa10r/boltz-backend"
   },
   "files": [
     "bin",
