@@ -5,12 +5,16 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+type DecodeFunction = fn(&str) -> Result<Invoice, InvoiceError>;
+
 const BECH32_BOLT12_INVOICE_HRP: &str = "lni";
+
+const DECODE_FUNCS: &[DecodeFunction] =
+    &[decode_bolt11, decode_bolt12_offer, decode_bolt12_invoice];
 
 #[derive(Debug, PartialEq)]
 pub enum InvoiceError {
     InvalidNetwork,
-    InvalidInvariant,
     DecodeError(String),
 }
 
@@ -18,8 +22,7 @@ impl Display for InvoiceError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             InvoiceError::InvalidNetwork => write!(f, "invalid network"),
-            InvoiceError::InvalidInvariant => write!(f, "invalid invariant"),
-            InvoiceError::DecodeError(data) => write!(f, "could not parse invoice: {}", data),
+            InvoiceError::DecodeError(data) => write!(f, "invalid invoice: {}", data),
         }
     }
 }
@@ -34,7 +37,15 @@ pub enum Invoice {
 }
 
 impl Invoice {
-    fn is_for_network(&self, network: wallet::Network) -> bool {
+    pub fn is_expired(&self) -> bool {
+        match self {
+            Invoice::Bolt11(invoice) => invoice.is_expired(),
+            Invoice::Offer(offer) => offer.is_expired(),
+            Invoice::Bolt12(invoice) => invoice.is_expired(),
+        }
+    }
+
+    pub fn is_for_network(&self, network: wallet::Network) -> bool {
         let chain_hash = Self::network_to_chain_hash(network);
 
         match self {
@@ -63,45 +74,53 @@ pub fn decode(network: wallet::Network, invoice_or_offer: &str) -> Result<Invoic
 }
 
 fn parse(invoice_or_offer: &str) -> Result<Invoice, InvoiceError> {
-    if let Ok(invoice) = decode_bolt11(invoice_or_offer) {
-        return Ok(invoice);
+    let mut first_error: Option<InvoiceError> = None;
+
+    for func in DECODE_FUNCS {
+        match func(invoice_or_offer) {
+            Ok(res) => return Ok(res),
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error.replace(err);
+                }
+            }
+        }
     }
 
-    if let Ok(invoice) = decode_bolt12_offer(invoice_or_offer) {
-        return Ok(invoice);
-    }
-
-    if let Ok(invoice) = decode_bolt12_invoice(invoice_or_offer) {
-        return Ok(invoice);
-    }
-
-    Err(InvoiceError::InvalidInvariant)
+    Err(first_error.unwrap_or(InvoiceError::DecodeError("could not decode".to_string())))
 }
 
-fn decode_bolt12_offer(offer: &str) -> anyhow::Result<Invoice> {
+fn decode_bolt12_offer(offer: &str) -> Result<Invoice, InvoiceError> {
     match lightning::offers::offer::Offer::from_str(offer) {
         Ok(offer) => Ok(Invoice::Offer(Box::new(offer))),
-        Err(err) => Err(InvoiceError::DecodeError(format!("{:?}", err)).into()),
+        Err(err) => Err(InvoiceError::DecodeError(format!("{:?}", err))),
     }
 }
 
-fn decode_bolt12_invoice(invoice: &str) -> anyhow::Result<Invoice> {
-    let (hrp, data) = bech32::decode_without_checksum(invoice)?;
+fn decode_bolt12_invoice(invoice: &str) -> Result<Invoice, InvoiceError> {
+    let (hrp, data) = match bech32::decode_without_checksum(invoice) {
+        Ok(dec) => dec,
+        Err(err) => return Err(InvoiceError::DecodeError(format!("{:?}", err))),
+    };
     if hrp != BECH32_BOLT12_INVOICE_HRP {
-        return Err(InvoiceError::DecodeError("invalid HRP".to_string()).into());
+        return Err(InvoiceError::DecodeError("invalid HRP".to_string()));
     }
 
-    let data = Vec::<u8>::from_base32(&data)?;
+    let data = match Vec::<u8>::from_base32(&data) {
+        Ok(dec) => dec,
+        Err(err) => return Err(InvoiceError::DecodeError(format!("{:?}", err))),
+    };
+
     match lightning::offers::invoice::Bolt12Invoice::try_from(data) {
         Ok(invoice) => Ok(Invoice::Bolt12(Box::new(invoice))),
-        Err(err) => Err(InvoiceError::DecodeError(format!("{:?}", err)).into()),
+        Err(err) => Err(InvoiceError::DecodeError(format!("{:?}", err))),
     }
 }
 
-fn decode_bolt11(invoice: &str) -> anyhow::Result<Invoice> {
+fn decode_bolt11(invoice: &str) -> Result<Invoice, InvoiceError> {
     match lightning_invoice::Bolt11Invoice::from_str(invoice) {
         Ok(invoice) => Ok(Invoice::Bolt11(Box::new(invoice))),
-        Err(err) => Err(InvoiceError::DecodeError(format!("{:?}", err)).into()),
+        Err(err) => Err(InvoiceError::DecodeError(format!("{:?}", err))),
     }
 }
 
@@ -112,6 +131,7 @@ mod test {
     };
     use crate::wallet;
     use bech32::FromBase32;
+    use rstest::*;
     use std::str::FromStr;
 
     const BOLT12_OFFER: &str = "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrc2q3skgumxzcssyeyreggqmet8r4k6krvd3knppsx6c8v5g7tj8hcuq8lleta9ve5n";
@@ -135,7 +155,16 @@ mod test {
 
         assert_eq!(
             decode(wallet::Network::Regtest, "invalid").err().unwrap(),
-            InvoiceError::InvalidInvariant
+            InvoiceError::DecodeError("ParseError(Bech32Error(MissingSeparator))".to_string())
+        );
+    }
+
+    #[test]
+    fn test_decode_amp_invoice() {
+        let invoice = "lnbc10n1pnhs4wjpp5w09tfff6a4l4dqvy40rr284l3uxccadgnzkep4fh2v4cs9yracmsdqqcqzzsxq9z0rgqsp52vckh4k525a2vlkdy77w7c5940t9lfj34ythh8s9ckmdx3q2zfpq9q8pqqqsgqv07zpwlccsq23ry8ptzqjy5vwcatgg0y6490y5udkzcpgjhmr449hqpdxapjnsu3vucnav040sqg5a9rg5cxp5y4e50mhh8keluhf2spwyry73";
+        assert_eq!(
+            decode(wallet::Network::Mainnet, invoice).unwrap_err(),
+            InvoiceError::DecodeError("SemanticError(InvalidFeatures)".to_string())
         );
     }
 
@@ -211,5 +240,14 @@ mod test {
                     .into()
             )
         );
+    }
+
+    #[rstest]
+    #[case(BOLT11_INVOICE, true)]
+    #[case(BOLT12_INVOICE, true)]
+    #[case(BOLT12_OFFER, false)]
+    fn test_invoice_is_expired(#[case] invoice: &str, #[case] expected: bool) {
+        let res = decode(wallet::Network::Regtest, invoice).unwrap();
+        assert_eq!(res.is_expired(), expected);
     }
 }

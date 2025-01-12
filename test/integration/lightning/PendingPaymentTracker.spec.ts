@@ -82,12 +82,10 @@ describe('PendingPaymentTracker', () => {
     await Swap.truncate();
 
     await tracker.init(currencies);
-    await clnClient['mpay']?.resetPathMemory();
   });
 
   afterAll(async () => {
     await db.close();
-    await clnClient['mpay']?.resetPathMemory();
 
     await Sidecar.stop();
 
@@ -162,18 +160,15 @@ describe('PendingPaymentTracker', () => {
       const preimageHash = (
         await sidecar.decodeInvoiceOrOffer(invoiceRes.paymentRequest)
       ).paymentHash!;
-      await Swap.create({
+
+      const swap = await Swap.create({
         ...createSubmarineSwapData(),
         invoice: invoiceRes.paymentRequest,
         preimageHash: getHexString(preimageHash),
       });
 
       await waitForClnChainSync();
-      const res = await tracker.sendPayment(
-        '',
-        clnClient,
-        invoiceRes.paymentRequest,
-      );
+      const res = await tracker.sendPayment(swap, clnClient);
       expect(res).not.toBeUndefined();
       expect(typeof res!.feeMsat).toEqual('number');
       expect(res!.preimage).toEqual(
@@ -199,15 +194,15 @@ describe('PendingPaymentTracker', () => {
       ).paymentHash!;
 
       await bitcoinLndClient.cancelHoldInvoice(preimageHash);
-      await Swap.create({
+      const swap = await Swap.create({
         ...createSubmarineSwapData(),
         invoice: invoiceRes.paymentRequest,
         preimageHash: getHexString(preimageHash),
       });
 
-      await expect(
-        tracker.sendPayment('', clnClient, invoiceRes.paymentRequest),
-      ).rejects.toEqual(expect.anything());
+      await expect(tracker.sendPayment(swap, clnClient)).rejects.toEqual(
+        expect.anything(),
+      );
 
       const payments = await LightningPaymentRepository.findByPreimageHash(
         getHexString(preimageHash),
@@ -225,7 +220,7 @@ describe('PendingPaymentTracker', () => {
       const preimageHash = randomBytes(32);
       const invoice = await bitcoinLndClient.addHoldInvoice(1, preimageHash);
 
-      await Swap.create({
+      const swap = await Swap.create({
         ...createSubmarineSwapData(),
         invoice,
         preimageHash: getHexString(preimageHash),
@@ -234,9 +229,9 @@ describe('PendingPaymentTracker', () => {
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-expect-error
       PendingPaymentTracker['raceTimeout'] = 2;
-      await expect(
-        tracker.sendPayment('', clnClient, invoice),
-      ).resolves.toEqual(undefined);
+      await expect(tracker.sendPayment(swap, clnClient)).resolves.toEqual(
+        undefined,
+      );
       await bitcoinLndClient.cancelHoldInvoice(preimageHash);
 
       expect(
@@ -271,7 +266,7 @@ describe('PendingPaymentTracker', () => {
         });
 
         await expect(
-          tracker.sendPayment('', bitcoinLndClient, swap.invoice!),
+          tracker.sendPayment(swap, bitcoinLndClient),
         ).resolves.toEqual(undefined);
       });
 
@@ -298,7 +293,7 @@ describe('PendingPaymentTracker', () => {
 
           const paymentRes = await bitcoinLndClient.sendPayment(invoice);
           await expect(
-            tracker.sendPayment('', bitcoinLndClient, invoice),
+            tracker.sendPayment(swap, bitcoinLndClient),
           ).resolves.toEqual(paymentRes);
         });
 
@@ -321,9 +316,9 @@ describe('PendingPaymentTracker', () => {
           const paymentRes = await clnClient.sendPayment(
             invoiceRes.paymentRequest,
           );
-          await expect(
-            tracker.sendPayment('', clnClient, invoiceRes.paymentRequest),
-          ).resolves.toEqual(paymentRes);
+          await expect(tracker.sendPayment(swap, clnClient)).resolves.toEqual(
+            paymentRes,
+          );
         });
 
         test('should return undefined when node for fetching success details is not available', async () => {
@@ -350,9 +345,9 @@ describe('PendingPaymentTracker', () => {
           ]);
 
           await clnClient.sendPayment(invoiceRes.paymentRequest);
-          await expect(
-            tracker.sendPayment('', clnClient, invoiceRes.paymentRequest),
-          ).resolves.toEqual(undefined);
+          await expect(tracker.sendPayment(swap, clnClient)).resolves.toEqual(
+            undefined,
+          );
         });
       });
 
@@ -374,7 +369,7 @@ describe('PendingPaymentTracker', () => {
         });
 
         await expect(
-          tracker.sendPayment('', bitcoinLndClient, invoice),
+          tracker.sendPayment(swap, bitcoinLndClient),
         ).rejects.toEqual(error);
       });
     });

@@ -35,7 +35,7 @@ describe('WalletLiquid', () => {
     name         | network                   | support
     ${'regtest'} | ${Networks.liquidRegtest} | ${true}
     ${'testnet'} | ${Networks.liquidTestnet} | ${true}
-    ${'mainnet'} | ${Networks.liquidMainnet} | ${false}
+    ${'mainnet'} | ${Networks.liquidMainnet} | ${true}
   `('should check if $name supports discount CT', ({ network, support }) => {
     expect(
       new WalletLiquid(Logger.disabledLogger, provider, slip77, network)

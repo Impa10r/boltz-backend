@@ -151,6 +151,7 @@ where
 #[cfg(test)]
 mod server_test {
     use crate::api::ws;
+    use crate::api::ws::types::SwapStatus;
     use crate::chain::utils::Transaction;
     use crate::currencies::Currency;
     use crate::db::helpers::web_hook::WebHookHelper;
@@ -164,7 +165,7 @@ mod server_test {
     use crate::swap::manager::SwapManager;
     use crate::tracing_setup::ReloadHandler;
     use crate::webhook::caller;
-    use alloy::primitives::{Address, FixedBytes, Signature, U256};
+    use alloy::primitives::{Address, FixedBytes, PrimitiveSignature, U256};
     use async_trait::async_trait;
     use mockall::{mock, predicate::*};
     use std::collections::HashMap;
@@ -206,7 +207,7 @@ mod server_test {
                 amount: U256,
                 token_address: Option<Address>,
                 timeout: u64,
-            ) -> anyhow::Result<Signature>;
+            ) -> anyhow::Result<PrimitiveSignature>;
         }
     }
 
@@ -220,6 +221,7 @@ mod server_test {
         #[async_trait]
         impl SwapManager for Manager {
             fn get_currency(&self, symbol: &str) -> Option<Currency>;
+            fn listen_to_updates(&self) -> tokio::sync::broadcast::Receiver<SwapStatus>;
             async fn scan_mempool(
                 &self,
                 symbols: Option<Vec<String>>,
@@ -230,7 +232,7 @@ mod server_test {
     #[tokio::test]
     async fn test_connect() {
         let token = CancellationToken::new();
-        let (status_tx, _) = tokio::sync::broadcast::channel::<Vec<ws::types::SwapStatus>>(1);
+        let (status_tx, _) = tokio::sync::broadcast::channel::<Vec<SwapStatus>>(1);
 
         let server = Server::<_, _, crate::notifications::mattermost::Client<Commands>>::new(
             token.clone(),

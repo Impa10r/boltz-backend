@@ -3,6 +3,7 @@ import Logger from '../../../Logger';
 import { getHexString, stringify } from '../../../Utils';
 import { SwapUpdateEvent, SwapVersion } from '../../../consts/Enums';
 import ChainSwapRepository from '../../../db/repositories/ChainSwapRepository';
+import ReferralRepository from '../../../db/repositories/ReferralRepository';
 import SwapRepository from '../../../db/repositories/SwapRepository';
 import RateProviderTaproot from '../../../rates/providers/RateProviderTaproot';
 import CountryCodes from '../../../service/CountryCodes';
@@ -918,7 +919,7 @@ class SwapRouter extends RouterBase {
      *   schemas:
      *     ReverseClaimRequest:
      *       type: object
-     *       required: ["preimage", "pubNonce", "transaction", "index"]
+     *       required: ["preimage"]
      *       properties:
      *         preimage:
      *           type: string
@@ -938,7 +939,7 @@ class SwapRouter extends RouterBase {
      * @openapi
      * /swap/reverse/{id}/claim:
      *   post:
-     *     description: Requests a partial signature for a cooperative Reverse Swap claim transaction
+     *     description: Requests a partial signature for a cooperative Reverse Swap claim transaction. To settle the invoice, but not claim the onchain HTLC (eg to create a batched claim in the future), only the preimage is required. If no transaction is provided, an empty object is returned as response.
      *     tags: [Reverse]
      *     parameters:
      *       - in: path
@@ -1654,13 +1655,17 @@ class SwapRouter extends RouterBase {
     return router;
   };
 
-  private getSubmarine = (_req: Request, res: Response) =>
+  private getSubmarine = async (req: Request, res: Response) => {
+    const referral = await this.getReferralFromHeader(req);
     successResponse(
       res,
       RateProviderTaproot.serializePairs(
-        this.service.rateProvider.providers[SwapVersion.Taproot].submarinePairs,
+        this.service.rateProvider.providers[
+          SwapVersion.Taproot
+        ].getSubmarinePairs(referral),
       ),
     );
+  };
 
   private createSubmarine = async (req: Request, res: Response) => {
     const { to, from, invoice, webhook, pairHash, refundPublicKey } =
@@ -1816,13 +1821,17 @@ class SwapRouter extends RouterBase {
     successResponse(res, {});
   };
 
-  private getReverse = (_req: Request, res: Response) =>
+  private getReverse = async (req: Request, res: Response) => {
+    const referral = await this.getReferralFromHeader(req);
     successResponse(
       res,
       RateProviderTaproot.serializePairs(
-        this.service.rateProvider.providers[SwapVersion.Taproot].reversePairs,
+        this.service.rateProvider.providers[
+          SwapVersion.Taproot
+        ].getReversePairs(referral),
       ),
     );
+  };
 
   private createReverse = async (req: Request, res: Response) => {
     const {
@@ -1939,34 +1948,55 @@ class SwapRouter extends RouterBase {
       req.body,
       [
         { name: 'id', type: 'string', optional: params.id !== undefined },
-        { name: 'index', type: 'number' },
         { name: 'preimage', type: 'string', hex: true },
-        { name: 'pubNonce', type: 'string', hex: true },
-        { name: 'transaction', type: 'string', hex: true },
+        { name: 'index', type: 'number', optional: true },
+        { name: 'pubNonce', type: 'string', hex: true, optional: true },
+        { name: 'transaction', type: 'string', hex: true, optional: true },
       ],
     );
+
+    const toSignParams = [pubNonce, index, transaction];
+    const allDefined = toSignParams.every((param) => param !== undefined);
+    const allUndefined = toSignParams.every((param) => param === undefined);
+
+    if (!allDefined && !allUndefined) {
+      throw 'pubNonce, index and transaction must be all set or all undefined';
+    }
 
     const sig = await this.service.musigSigner.signReverseSwapClaim(
       params.id || id,
       preimage,
-      pubNonce,
-      transaction,
-      index,
+      allDefined
+        ? {
+            index,
+            theirNonce: pubNonce,
+            rawTransaction: transaction,
+          }
+        : undefined,
     );
 
-    successResponse(res, {
-      pubNonce: getHexString(sig.pubNonce),
-      partialSignature: getHexString(sig.signature),
-    });
+    successResponse(
+      res,
+      sig !== undefined
+        ? {
+            pubNonce: getHexString(sig.pubNonce),
+            partialSignature: getHexString(sig.signature),
+          }
+        : {},
+    );
   };
 
-  private getChain = (_req: Request, res: Response) =>
+  private getChain = async (req: Request, res: Response) => {
+    const referral = await this.getReferralFromHeader(req);
     successResponse(
       res,
       RateProviderTaproot.serializePairs(
-        this.service.rateProvider.providers[SwapVersion.Taproot].chainPairs,
+        this.service.rateProvider.providers[SwapVersion.Taproot].getChainPairs(
+          referral,
+        ),
       ),
     );
+  };
 
   // TODO: claim covenant
   private createChain = async (req: Request, res: Response) => {
@@ -2246,6 +2276,15 @@ class SwapRouter extends RouterBase {
     }
 
     return res;
+  };
+
+  private getReferralFromHeader = async (req: Request) => {
+    const referral = req.header('referral');
+    if (referral === undefined) {
+      return null;
+    }
+
+    return ReferralRepository.getReferralById(referral);
   };
 }
 

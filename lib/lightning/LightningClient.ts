@@ -99,7 +99,10 @@ interface LightningClient extends BalancerFetcher, BaseClient<EventTypes> {
   symbol: string;
   type: NodeType;
 
+  readonly maxPaymentFeeRatio: number;
+
   isConnected(): boolean;
+
   setClientStatus(status: ClientStatus): void;
 
   raceCall<T>(
@@ -109,9 +112,11 @@ interface LightningClient extends BalancerFetcher, BaseClient<EventTypes> {
   ): Promise<T>;
 
   connect(startSubscriptions?: boolean): Promise<boolean>;
+
   disconnect(): void;
 
   getInfo(): Promise<NodeInfo>;
+
   listChannels(
     activeOnly?: boolean,
     privateOnly?: boolean,
@@ -126,8 +131,11 @@ interface LightningClient extends BalancerFetcher, BaseClient<EventTypes> {
     descriptionHash?: Buffer,
     routingHints?: HopHint[][],
   ): Promise<string>;
+
   lookupHoldInvoice(preimageHash: Buffer): Promise<Invoice>;
+
   settleHoldInvoice(preimage: Buffer): Promise<void>;
+
   cancelHoldInvoice(preimageHash: Buffer): Promise<void>;
 
   subscribeSingleInvoice(preimageHash: Buffer): void;
@@ -138,7 +146,9 @@ interface LightningClient extends BalancerFetcher, BaseClient<EventTypes> {
     invoice: string,
     cltvDelta?: number,
     outgoingChannelId?: string,
+    maxPaymentFeeRatio?: number,
   ): Promise<PaymentResponse>;
+
   queryRoutes(
     destination: string,
     amt: number,
@@ -150,6 +160,7 @@ interface LightningClient extends BalancerFetcher, BaseClient<EventTypes> {
 
 interface RoutingHintsProvider {
   stop(): void;
+
   routingHints(nodeId: string): Promise<HopHint[][]>;
 }
 

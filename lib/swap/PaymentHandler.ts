@@ -135,9 +135,8 @@ class PaymentHandler {
         `Paying invoice of swap ${swap.id} with CLTV limit: ${cltvLimit}`,
       );
       const payResponse = await this.pendingPaymentTracker.sendPayment(
-        swap.id,
+        swap,
         lightningClient,
-        swap.invoice!,
         cltvLimit,
         outgoingChannelId,
       );
@@ -326,7 +325,7 @@ class PaymentHandler {
     response: PaymentResponse,
   ): Promise<Buffer> => {
     this.logger.verbose(
-      `Paid invoice of Swap ${swap.id}: ${getHexString(response.preimage)}`,
+      `Paid invoice of Swap ${swap.id} (${swap.preimageHash}): ${getHexString(response.preimage)}`,
     );
 
     this.emit(

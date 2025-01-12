@@ -4,11 +4,12 @@ use crate::lightning::cln::cln_rpc::{
     ListconfigsResponse,
 };
 use alloy::hex;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 
 #[allow(clippy::enum_variant_names)]
 mod cln_rpc {
@@ -66,16 +67,22 @@ impl Cln {
         let res = self
             .cln
             .fetch_invoice(FetchinvoiceRequest {
-                offer,
+                offer: offer.clone(),
                 amount_msat: Some(Amount { msat: amount_msat }),
                 timeout: None,
                 quantity: None,
                 payer_note: None,
+                payer_metadata: None,
                 recurrence_start: None,
                 recurrence_label: None,
                 recurrence_counter: None,
             })
-            .await?;
+            .await
+            .map_err(Self::parse_error)?;
+        debug!(
+            "Fetched invoice for {}msat for offer {}",
+            amount_msat, offer
+        );
 
         Ok(res.into_inner().invoice)
     }
@@ -92,6 +99,34 @@ impl Cln {
             .await?;
         Ok(res.into_inner())
     }
+
+    fn parse_error(status: tonic::Status) -> anyhow::Error {
+        let mut msg = status.message();
+
+        const MESSAGE_PREFIXES: &[&str] = &["message: \"", "message\":\"", "message\\\":\\\""];
+        const MESSAGE_SUFFIXES: &[&str] = &["\", data:", "\\\"}", "\"}"];
+
+        'outer: loop {
+            for prefix in MESSAGE_PREFIXES {
+                if let Some(start) = msg.find(prefix) {
+                    for suffix in MESSAGE_SUFFIXES {
+                        if let Some(end) = msg.rfind(suffix) {
+                            msg = &msg[start + prefix.len()..end];
+                            continue 'outer;
+                        }
+                    }
+                }
+            }
+
+            break;
+        }
+
+        if msg.is_empty() {
+            return anyhow!("{}", status.code().to_string());
+        }
+
+        anyhow!(msg.to_owned())
+    }
 }
 
 #[async_trait]
@@ -105,23 +140,27 @@ impl BaseClient for Cln {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
-        let configs = self.list_configs().await?;
-        let experimental_offers = match configs.configs {
-            Some(config) => match config.experimental_offers {
-                Some(option) => option.set,
-                None => false,
-            },
-            None => false,
-        };
+        let info = self.get_info().await?;
+        let version = info.version.split(".").collect::<Vec<&str>>();
 
-        if !experimental_offers {
-            return Err(crate::lightning::Error::NoBolt12Support(
-                "experimental-offers not enabled".into(),
-            )
-            .into());
+        if version[0] == "24" && version[1] == "08" {
+            let configs = self.list_configs().await?;
+            let experimental_offers = match configs.configs {
+                Some(config) => match config.experimental_offers {
+                    Some(option) => option.set,
+                    None => false,
+                },
+                None => false,
+            };
+
+            if !experimental_offers {
+                return Err(crate::lightning::Error::NoBolt12Support(
+                    "experimental-offers not enabled".into(),
+                )
+                .into());
+            }
         }
 
-        let info = self.get_info().await?;
         info!(
             "Connected to {} CLN {} ({})",
             self.symbol,
@@ -130,5 +169,23 @@ impl BaseClient for Cln {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use rstest::*;
+
+    #[rstest]
+    #[case("Error calling method Xpay: RpcError { code: Some(203), message: \"Destination said it doesn't know invoice: incorrect_or_unknown_payment_details\", data: None }", "Destination said it doesn't know invoice: incorrect_or_unknown_payment_details")]
+    #[case("Failed: could not route or connect directly to 02ead25af6e0271c5167d6fd05545d2d538995ce3e16ad780a1010fc4e91522202: {\"code\":400,\"message\":\"Unable to connect, no address known for peer\"}", "Unable to connect, no address known for peer")]
+    #[case("Error calling method FetchInvoice: RpcError { code: Some(1003), message: \"Failed: could not route or connect directly to 02ee337aec2b12fef609a57d1c32834fe3107d315acaf8f5206ccf94dc2a9baa8c: {\"code\":400,\"message\":\"Unable to connect, no address known for peer\"}\", data: None }", "Unable to connect, no address known for peer")]
+    #[case("Error calling method FetchInvoice: RpcError { code: Some(1003), message: \"Failed: could not route or connect directly to 02ee337aec2b12fef609a57d1c32834fe3107d315acaf8f5206ccf94dc2a9baa8c: {\\\"code\\\":400,\\\"message\\\":\\\"Unable to connect, no address known for peer\\\"}\", data: None }", "Unable to connect, no address known for peer")]
+    #[case("gRPC error", "gRPC error")]
+    #[case("", "The operation was cancelled")]
+    fn test_parse_error(#[case] msg: &str, #[case] expected: &str) {
+        let error = Cln::parse_error(tonic::Status::new(tonic::Code::Cancelled, msg));
+        assert_eq!(error.to_string(), expected);
     }
 }

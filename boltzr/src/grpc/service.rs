@@ -5,15 +5,17 @@ use crate::evm::RefundSigner;
 use crate::grpc::service::boltzr::boltz_r_server::BoltzR;
 use crate::grpc::service::boltzr::scan_mempool_response::Transactions;
 use crate::grpc::service::boltzr::sign_evm_refund_request::Contract;
+use crate::grpc::service::boltzr::swap_update::{ChannelInfo, FailureDetails, TransactionInfo};
 use crate::grpc::service::boltzr::{
     bolt11_invoice, bolt12_invoice, decode_invoice_or_offer_response, Bolt11Invoice, Bolt12Invoice,
     Bolt12Offer, CreateWebHookRequest, CreateWebHookResponse, DecodeInvoiceOrOfferRequest,
     DecodeInvoiceOrOfferResponse, Feature, FetchInvoiceRequest, FetchInvoiceResponse,
     GetInfoRequest, GetInfoResponse, GetMessagesRequest, GetMessagesResponse, LogLevel,
     ScanMempoolRequest, ScanMempoolResponse, SendMessageRequest, SendMessageResponse,
-    SendWebHookRequest, SendWebHookResponse, SetLogLevelRequest, SetLogLevelResponse,
-    SignEvmRefundRequest, SignEvmRefundResponse, StartWebHookRetriesRequest,
-    StartWebHookRetriesResponse, SwapUpdateRequest, SwapUpdateResponse,
+    SendSwapUpdateRequest, SendSwapUpdateResponse, SendWebHookRequest, SendWebHookResponse,
+    SetLogLevelRequest, SetLogLevelResponse, SignEvmRefundRequest, SignEvmRefundResponse,
+    StartWebHookRetriesRequest, StartWebHookRetriesResponse, SwapUpdate, SwapUpdateRequest,
+    SwapUpdateResponse,
 };
 use crate::grpc::status_fetcher::StatusFetcher;
 use crate::lightning::invoice::Invoice;
@@ -251,6 +253,54 @@ where
                             break;
                         }
                     }
+                }
+            }
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    type SendSwapUpdateStream =
+        Pin<Box<dyn Stream<Item = Result<SendSwapUpdateResponse, Status>> + Send>>;
+
+    #[instrument(name = "grpc::send_swap_update", skip_all)]
+    async fn send_swap_update(
+        &self,
+        request: Request<SendSwapUpdateRequest>,
+    ) -> Result<Response<Self::SendSwapUpdateStream>, Status> {
+        extract_parent_context(&request);
+
+        let mut update_rx = self.manager.listen_to_updates();
+
+        let (tx, rx) = mpsc::channel(128);
+        tokio::spawn(async move {
+            while let Ok(update) = update_rx.recv().await {
+                if let Err(err) = tx
+                    .send(Ok(SendSwapUpdateResponse {
+                        update: Some(SwapUpdate {
+                            id: update.id,
+                            status: update.status,
+                            failure_reason: update.failure_reason,
+                            zero_conf_rejected: update.zero_conf_rejected,
+                            channel_info: update.channel_info.map(|info| ChannelInfo {
+                                funding_transaction_id: info.funding_transaction_id,
+                                funding_transaction_vout: info.funding_transaction_vout,
+                            }),
+                            failure_details: update.failure_details.map(|dt| FailureDetails {
+                                actual: dt.actual,
+                                expected: dt.expected,
+                            }),
+                            transaction_info: update.transaction.map(|tx| TransactionInfo {
+                                id: tx.id,
+                                hex: tx.hex,
+                                eta: tx.eta,
+                            }),
+                        }),
+                    }))
+                    .await
+                {
+                    debug!("send_swap_update stream closed: {}", err);
+                    break;
                 }
             }
         });
@@ -672,7 +722,7 @@ mod test {
     use crate::swap::manager::SwapManager;
     use crate::tracing_setup::ReloadHandler;
     use crate::webhook::caller::{Caller, Config};
-    use alloy::primitives::{Address, FixedBytes, Signature, U256};
+    use alloy::primitives::{Address, FixedBytes, PrimitiveSignature, U256};
     use anyhow::anyhow;
     use async_trait::async_trait;
     use mockall::mock;
@@ -713,7 +763,7 @@ mod test {
                 amount: U256,
                 token_address: Option<Address>,
                 timeout: u64,
-            ) -> anyhow::Result<Signature>;
+            ) -> anyhow::Result<PrimitiveSignature>;
         }
     }
 
@@ -727,6 +777,7 @@ mod test {
         #[async_trait]
         impl SwapManager for Manager {
             fn get_currency(&self, symbol: &str) -> Option<Currency>;
+            fn listen_to_updates(&self) -> tokio::sync::broadcast::Receiver<crate::api::ws::types::SwapStatus>;
             async fn scan_mempool(
                 &self,
                 symbols: Option<Vec<String>>,
@@ -871,9 +922,9 @@ mod test {
         let sig_str = "0xd247cfedc0c62ea93f4f3093a3b2941c329773f140ab0cdc04a641376982d34e0aa7152cb2dd9036fad543646a3fdc8b22c8d83e62e13684d61f630afdd08b0f1c";
         signer
             .expect_sign_cooperative_refund()
-            .returning(
-                |_, _, _, _, _| Ok(alloy::primitives::Signature::from_str(sig_str).unwrap()),
-            );
+            .returning(|_, _, _, _, _| {
+                Ok(alloy::primitives::PrimitiveSignature::from_str(sig_str).unwrap())
+            });
         svc.refund_signer = Some(Arc::new(signer));
 
         let res = svc

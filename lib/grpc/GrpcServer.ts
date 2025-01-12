@@ -42,6 +42,9 @@ class GrpcServer {
       getPendingSweeps: grpcService.getPendingSweeps,
       getLabel: grpcService.getLabel,
       setLogLevel: grpcService.setLogLevel,
+      calculateTransactionFee: grpcService.calculateTransactionFee,
+      getReferrals: grpcService.getReferrals,
+      setReferral: grpcService.setReferral,
     });
   }
 

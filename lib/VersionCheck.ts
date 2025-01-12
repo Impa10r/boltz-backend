@@ -1,7 +1,6 @@
 import ChainClient from './chain/ChainClient';
 import LndClient from './lightning/LndClient';
 import ClnClient from './lightning/cln/ClnClient';
-import MpayClient from './lightning/cln/MpayClient';
 
 type Version = string | number;
 
@@ -79,23 +78,19 @@ class VersionCheck {
   > = {
     [ChainClient.serviceName]: {
       minimal: 220000,
-      maximal: 280000,
+      maximal: 280100,
     },
     [ClnClient.serviceName]: {
-      minimal: '23.05',
-      maximal: '24.08.2',
+      minimal: '24.11',
+      maximal: '24.11.1',
     },
     [ClnClient.serviceNameHold]: {
       minimal: '0.2.0',
-      maximal: '0.2.0',
-    },
-    [MpayClient.serviceName]: {
-      minimal: '0.1.3',
-      maximal: '0.1.3',
+      maximal: '0.2.1',
     },
     [LndClient.serviceName]: {
-      minimal: '0.17.0',
-      maximal: '0.18.3',
+      minimal: '0.18.0',
+      maximal: '0.18.4',
     },
   };
 
@@ -135,10 +130,10 @@ class VersionCheck {
         if (version.startsWith('v')) {
           sanitizedVersion = sanitizedVersion.slice(1);
         }
-        if (version.endsWith(ClnClient.moddedVersionSuffix)) {
+        if (version.includes(ClnClient.moddedVersionSuffix)) {
           sanitizedVersion = sanitizedVersion.slice(
             0,
-            -ClnClient.moddedVersionSuffix.length,
+            sanitizedVersion.indexOf(ClnClient.moddedVersionSuffix),
           );
         }
 
@@ -147,10 +142,6 @@ class VersionCheck {
 
       case ClnClient.serviceNameHold:
         limits = VersionCheck.versionLimits[ClnClient.serviceNameHold];
-        break;
-
-      case MpayClient.serviceName:
-        limits = VersionCheck.versionLimits[MpayClient.serviceName];
         break;
 
       default:

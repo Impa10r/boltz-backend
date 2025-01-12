@@ -1,7 +1,12 @@
 import { Transaction, crypto } from 'bitcoinjs-lib';
 import { OutputType, Scripts } from 'boltz-core';
 import { randomBytes } from 'crypto';
-import { ContractTransactionResponse, getAddress } from 'ethers';
+import {
+  ContractTransactionResponse,
+  TransactionReceipt,
+  TransactionResponse,
+  getAddress,
+} from 'ethers';
 import { Transaction as LiquidTransaction, confidential } from 'liquidjs-lib';
 import os from 'os';
 import path from 'path';
@@ -551,7 +556,7 @@ export const calculateLiquidTransactionFee = (
  * Calculates the transaction fee of an Ethereum contract interaction and rounds it to 10 ** -8 decimals
  */
 export const calculateEthereumTransactionFee = (
-  transaction: ContractTransactionResponse,
+  transaction: TransactionResponse | ContractTransactionResponse,
 ): number => {
   return Number(
     (transaction.gasLimit! *
@@ -560,6 +565,12 @@ export const calculateEthereumTransactionFee = (
         : transaction.gasPrice!)) /
       etherDecimals,
   );
+};
+
+export const calculateEthereumTransactionFeeWithReceipt = (
+  receipt: TransactionReceipt,
+): number => {
+  return Number((receipt.gasUsed * receipt.gasPrice) / etherDecimals);
 };
 
 /**
@@ -628,3 +639,6 @@ export const arrayToChunks = <T>(array: T[], chunkSize: number): T[][] => {
 };
 
 export const bigIntMax = (a: bigint, b: bigint) => (a > b ? a : b);
+
+export const roundToDecimals = (value: number, decimals: number): number =>
+  Number(value.toFixed(decimals));
