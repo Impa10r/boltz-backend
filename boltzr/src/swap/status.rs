@@ -13,14 +13,20 @@ pub enum SwapUpdate {
     TransactionMempool,
     #[strum(serialize = "transaction.confirmed")]
     TransactionConfirmed,
+    #[strum(serialize = "transaction.claim.pending")]
+    TransactionClaimPending,
     #[strum(serialize = "transaction.claimed")]
     TransactionClaimed,
+    #[strum(serialize = "transaction.lockupFailed")]
+    TransactionLockupFailed,
 
     #[strum(serialize = "transaction.server.mempool")]
     TransactionServerMempool,
     #[strum(serialize = "transaction.server.confirmed")]
     TransactionServerConfirmed,
 
+    #[strum(serialize = "invoice.set")]
+    InvoiceSet,
     #[strum(serialize = "invoice.pending")]
     InvoicePending,
     #[strum(serialize = "invoice.failedToPay")]
@@ -44,7 +50,7 @@ pub fn serialize_swap_updates(
 
 #[cfg(test)]
 mod test {
-    use crate::swap::{serialize_swap_updates, SwapUpdate};
+    use crate::swap::{SwapUpdate, serialize_swap_updates};
     use rstest::*;
 
     #[rstest]

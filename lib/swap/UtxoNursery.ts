@@ -164,7 +164,6 @@ class UtxoNursery extends TypedEventEmitter<{
     );
 
     if (swap.receivingData.expectedAmount > outputValue) {
-      chainClient.removeOutputFilter(swapOutput.script);
       this.emit('chainSwap.lockup.failed', {
         swap,
         reason: Errors.INSUFFICIENT_AMOUNT(
@@ -178,11 +177,11 @@ class UtxoNursery extends TypedEventEmitter<{
 
     if (
       this.overpaymentProtector.isUnacceptableOverpay(
+        swap.type,
         swap.receivingData.expectedAmount,
         outputValue,
       )
     ) {
-      chainClient.removeOutputFilter(swapOutput.script);
       this.emit('chainSwap.lockup.failed', {
         swap,
         reason: Errors.OVERPAID_AMOUNT(
@@ -199,7 +198,10 @@ class UtxoNursery extends TypedEventEmitter<{
       chainClient,
       wallet,
     );
-    if (prevAddresses.some(this.blocks.isBlocked)) {
+    if (
+      prevAddresses.flatMap((a) => Object.values(a)).some(this.blocks.isBlocked)
+    ) {
+      chainClient.removeOutputFilter(swapOutput.script);
       this.emit('chainSwap.lockup.failed', {
         swap,
         reason: Errors.BLOCKED_ADDRESS().message,
@@ -303,6 +305,7 @@ class UtxoNursery extends TypedEventEmitter<{
             [Op.or]: [
               SwapUpdateEvent.SwapCreated,
               SwapUpdateEvent.TransactionMempool,
+              SwapUpdateEvent.TransactionLockupFailed,
               SwapUpdateEvent.TransactionZeroConfRejected,
             ],
           },
@@ -325,9 +328,14 @@ class UtxoNursery extends TypedEventEmitter<{
     await this.lock.acquire(UtxoNursery.lockupLock, async () => {
       for (let vout = 0; vout < transaction.outs.length; vout += 1) {
         const output = transaction.outs[vout];
-        const address = wallet.encodeAddress(output.script);
+        const encoded = wallet.encodeAddress(output.script);
 
-        await Promise.all([checkSwap(address), checkChainSwap(address)]);
+        await Promise.all(
+          [...new Set([encoded.new, encoded.legacy])].flatMap((a) => [
+            checkSwap(a),
+            checkChainSwap(a),
+          ]),
+        );
       }
     });
   };
@@ -770,6 +778,7 @@ class UtxoNursery extends TypedEventEmitter<{
 
       if (
         this.overpaymentProtector.isUnacceptableOverpay(
+          swap.type,
           updatedSwap.expectedAmount,
           outputValue,
         )
@@ -792,7 +801,9 @@ class UtxoNursery extends TypedEventEmitter<{
       chainClient,
       wallet,
     );
-    if (prevAddresses.some(this.blocks.isBlocked)) {
+    if (
+      prevAddresses.flatMap((a) => Object.values(a)).some(this.blocks.isBlocked)
+    ) {
       this.emit('swap.lockup.failed', {
         swap: updatedSwap,
         reason: Errors.BLOCKED_ADDRESS().message,

@@ -1,4 +1,4 @@
-use crate::grpc::service::boltzr::{swap_update, SwapUpdate};
+use crate::grpc::service::boltzr::{SwapUpdate, swap_update};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -24,7 +24,7 @@ pub struct ChannelInfo {
     pub funding_transaction_vout: u64,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Serialize, Default, Debug, Clone, PartialEq)]
 pub struct SwapStatus {
     pub id: String,
     pub status: String,

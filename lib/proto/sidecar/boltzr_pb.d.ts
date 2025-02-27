@@ -343,6 +343,46 @@ export namespace SwapUpdateResponse {
     }
 }
 
+export class SendSwapUpdateRequest extends jspb.Message { 
+
+    serializeBinary(): Uint8Array;
+    toObject(includeInstance?: boolean): SendSwapUpdateRequest.AsObject;
+    static toObject(includeInstance: boolean, msg: SendSwapUpdateRequest): SendSwapUpdateRequest.AsObject;
+    static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+    static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+    static serializeBinaryToWriter(message: SendSwapUpdateRequest, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): SendSwapUpdateRequest;
+    static deserializeBinaryFromReader(message: SendSwapUpdateRequest, reader: jspb.BinaryReader): SendSwapUpdateRequest;
+}
+
+export namespace SendSwapUpdateRequest {
+    export type AsObject = {
+    }
+}
+
+export class SendSwapUpdateResponse extends jspb.Message { 
+
+    hasUpdate(): boolean;
+    clearUpdate(): void;
+    getUpdate(): SwapUpdate | undefined;
+    setUpdate(value?: SwapUpdate): SendSwapUpdateResponse;
+
+    serializeBinary(): Uint8Array;
+    toObject(includeInstance?: boolean): SendSwapUpdateResponse.AsObject;
+    static toObject(includeInstance: boolean, msg: SendSwapUpdateResponse): SendSwapUpdateResponse.AsObject;
+    static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+    static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+    static serializeBinaryToWriter(message: SendSwapUpdateResponse, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): SendSwapUpdateResponse;
+    static deserializeBinaryFromReader(message: SendSwapUpdateResponse, reader: jspb.BinaryReader): SendSwapUpdateResponse;
+}
+
+export namespace SendSwapUpdateResponse {
+    export type AsObject = {
+        update?: SwapUpdate.AsObject,
+    }
+}
+
 export class StartWebHookRetriesRequest extends jspb.Message { 
 
     serializeBinary(): Uint8Array;
@@ -893,49 +933,43 @@ export namespace DecodeInvoiceOrOfferResponse {
 
 }
 
-export class FetchInvoiceRequest extends jspb.Message { 
-    getCurrency(): string;
-    setCurrency(value: string): FetchInvoiceRequest;
-    getOffer(): string;
-    setOffer(value: string): FetchInvoiceRequest;
-    getAmountMsat(): number;
-    setAmountMsat(value: number): FetchInvoiceRequest;
+export class IsMarkedRequest extends jspb.Message { 
+    getIp(): string;
+    setIp(value: string): IsMarkedRequest;
 
     serializeBinary(): Uint8Array;
-    toObject(includeInstance?: boolean): FetchInvoiceRequest.AsObject;
-    static toObject(includeInstance: boolean, msg: FetchInvoiceRequest): FetchInvoiceRequest.AsObject;
+    toObject(includeInstance?: boolean): IsMarkedRequest.AsObject;
+    static toObject(includeInstance: boolean, msg: IsMarkedRequest): IsMarkedRequest.AsObject;
     static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
     static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-    static serializeBinaryToWriter(message: FetchInvoiceRequest, writer: jspb.BinaryWriter): void;
-    static deserializeBinary(bytes: Uint8Array): FetchInvoiceRequest;
-    static deserializeBinaryFromReader(message: FetchInvoiceRequest, reader: jspb.BinaryReader): FetchInvoiceRequest;
+    static serializeBinaryToWriter(message: IsMarkedRequest, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): IsMarkedRequest;
+    static deserializeBinaryFromReader(message: IsMarkedRequest, reader: jspb.BinaryReader): IsMarkedRequest;
 }
 
-export namespace FetchInvoiceRequest {
+export namespace IsMarkedRequest {
     export type AsObject = {
-        currency: string,
-        offer: string,
-        amountMsat: number,
+        ip: string,
     }
 }
 
-export class FetchInvoiceResponse extends jspb.Message { 
-    getInvoice(): string;
-    setInvoice(value: string): FetchInvoiceResponse;
+export class IsMarkedResponse extends jspb.Message { 
+    getIsMarked(): boolean;
+    setIsMarked(value: boolean): IsMarkedResponse;
 
     serializeBinary(): Uint8Array;
-    toObject(includeInstance?: boolean): FetchInvoiceResponse.AsObject;
-    static toObject(includeInstance: boolean, msg: FetchInvoiceResponse): FetchInvoiceResponse.AsObject;
+    toObject(includeInstance?: boolean): IsMarkedResponse.AsObject;
+    static toObject(includeInstance: boolean, msg: IsMarkedResponse): IsMarkedResponse.AsObject;
     static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
     static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-    static serializeBinaryToWriter(message: FetchInvoiceResponse, writer: jspb.BinaryWriter): void;
-    static deserializeBinary(bytes: Uint8Array): FetchInvoiceResponse;
-    static deserializeBinaryFromReader(message: FetchInvoiceResponse, reader: jspb.BinaryReader): FetchInvoiceResponse;
+    static serializeBinaryToWriter(message: IsMarkedResponse, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): IsMarkedResponse;
+    static deserializeBinaryFromReader(message: IsMarkedResponse, reader: jspb.BinaryReader): IsMarkedResponse;
 }
 
-export namespace FetchInvoiceResponse {
+export namespace IsMarkedResponse {
     export type AsObject = {
-        invoice: string,
+        isMarked: boolean,
     }
 }
 

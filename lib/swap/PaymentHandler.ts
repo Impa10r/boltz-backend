@@ -119,11 +119,16 @@ class PaymentHandler {
     );
 
     const lightningCurrency = this.currencies.get(lightningSymbol)!;
-    const lightningClient = this.nodeSwitch.getSwapNode(
-      lightningCurrency,
-      (await this.sidecar.decodeInvoiceOrOffer(swap.invoice!)).type,
-      swap,
-    );
+    const { node, paymentHash, payments } =
+      await this.pendingPaymentTracker.getRelevantNode(
+        lightningCurrency,
+        swap,
+        await this.nodeSwitch.getSwapNode(
+          lightningCurrency,
+          await this.sidecar.decodeInvoiceOrOffer(swap.invoice!),
+          swap,
+        ),
+      );
 
     try {
       const cltvLimit = await this.timeoutDeltaProvider.getCltvLimit(swap);
@@ -135,9 +140,10 @@ class PaymentHandler {
         `Paying invoice of swap ${swap.id} with CLTV limit: ${cltvLimit}`,
       );
       const payResponse = await this.pendingPaymentTracker.sendPayment(
-        swap.id,
-        lightningClient,
-        swap.invoice!,
+        swap,
+        node,
+        paymentHash,
+        payments,
         cltvLimit,
         outgoingChannelId,
       );
@@ -150,7 +156,7 @@ class PaymentHandler {
         swap,
         channelCreation,
         lightningCurrency,
-        lightningClient,
+        node,
         error,
         outgoingChannelId,
       );
@@ -326,7 +332,7 @@ class PaymentHandler {
     response: PaymentResponse,
   ): Promise<Buffer> => {
     this.logger.verbose(
-      `Paid invoice of Swap ${swap.id}: ${getHexString(response.preimage)}`,
+      `Paid invoice of Swap ${swap.id} (${swap.preimageHash}): ${getHexString(response.preimage)}`,
     );
 
     this.emit(

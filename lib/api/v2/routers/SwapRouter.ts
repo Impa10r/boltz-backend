@@ -3,11 +3,11 @@ import Logger from '../../../Logger';
 import { getHexString, stringify } from '../../../Utils';
 import { SwapUpdateEvent, SwapVersion } from '../../../consts/Enums';
 import ChainSwapRepository from '../../../db/repositories/ChainSwapRepository';
+import ReferralRepository from '../../../db/repositories/ReferralRepository';
 import SwapRepository from '../../../db/repositories/SwapRepository';
 import RateProviderTaproot from '../../../rates/providers/RateProviderTaproot';
-import CountryCodes from '../../../service/CountryCodes';
 import Errors from '../../../service/Errors';
-import Service, { WebHookData } from '../../../service/Service';
+import Service, { ExtraFees, WebHookData } from '../../../service/Service';
 import ChainSwapSigner from '../../../service/cooperative/ChainSwapSigner';
 import MusigSigner, {
   PartialSignature,
@@ -31,7 +31,6 @@ class SwapRouter extends RouterBase {
     logger: Logger,
     private readonly service: Service,
     private readonly swapInfos: SwapInfos,
-    private readonly countryCodes: CountryCodes,
   ) {
     super(logger, 'swap');
   }
@@ -818,7 +817,10 @@ class SwapRouter extends RouterBase {
      *           description: HTLC address in which coins will be locked
      *         refundPublicKey:
      *           type: string
-     *           description: Public key of Boltz that will be used to refund the onchain HTLC
+     *           description: Public key of Boltz that will be used to refund UTXO HTLCs
+     *         refundAddress:
+     *           type: string
+     *           description: Address that should be specified as refund address for EVM lockup transactions
      *         timeoutBlockHeight:
      *           type: number
      *           description: Timeout block height of the onchain HTLC
@@ -918,7 +920,7 @@ class SwapRouter extends RouterBase {
      *   schemas:
      *     ReverseClaimRequest:
      *       type: object
-     *       required: ["preimage", "pubNonce", "transaction", "index"]
+     *       required: ["preimage"]
      *       properties:
      *         preimage:
      *           type: string
@@ -938,7 +940,7 @@ class SwapRouter extends RouterBase {
      * @openapi
      * /swap/reverse/{id}/claim:
      *   post:
-     *     description: Requests a partial signature for a cooperative Reverse Swap claim transaction
+     *     description: Requests a partial signature for a cooperative Reverse Swap claim transaction. To settle the invoice, but not claim the onchain HTLC (eg to create a batched claim in the future), only the preimage is required. If no transaction is provided, an empty object is returned as response.
      *     tags: [Reverse]
      *     parameters:
      *       - in: path
@@ -1654,28 +1656,34 @@ class SwapRouter extends RouterBase {
     return router;
   };
 
-  private getSubmarine = (_req: Request, res: Response) =>
+  private getSubmarine = async (req: Request, res: Response) => {
+    const referral = await this.getReferralFromHeader(req);
     successResponse(
       res,
       RateProviderTaproot.serializePairs(
-        this.service.rateProvider.providers[SwapVersion.Taproot].submarinePairs,
+        this.service.rateProvider.providers[
+          SwapVersion.Taproot
+        ].getSubmarinePairs(referral),
       ),
     );
+  };
 
   private createSubmarine = async (req: Request, res: Response) => {
-    const { to, from, invoice, webhook, pairHash, refundPublicKey } =
+    const { to, from, invoice, webhook, pairHash, refundPublicKey, extraFees } =
       validateRequest(req.body, [
         { name: 'to', type: 'string' },
         { name: 'from', type: 'string' },
         { name: 'webhook', type: 'object', optional: true },
         { name: 'invoice', type: 'string', optional: true },
         { name: 'pairHash', type: 'string', optional: true },
+        { name: 'extraFees', type: 'object', optional: true },
         { name: 'refundPublicKey', type: 'string', hex: true, optional: true },
       ]);
     const referralId = parseReferralId(req);
 
     const { pairId, orderSide } = this.service.convertToPairAndSide(from, to);
     const webHookData = this.parseWebHook(webhook);
+    const extraFeesData = this.parseExtraFees(extraFees);
 
     let response: { id: string };
 
@@ -1690,6 +1698,7 @@ class SwapRouter extends RouterBase {
         undefined,
         SwapVersion.Taproot,
         webHookData,
+        extraFeesData,
       );
     } else {
       const { preimageHash } = validateRequest(req.body, [
@@ -1708,7 +1717,7 @@ class SwapRouter extends RouterBase {
       });
     }
 
-    await markSwap(this.countryCodes, req.ip, response.id);
+    await markSwap(this.service.sidecar, req.ip, response.id);
 
     this.logger.verbose(`Created new Swap with id: ${response.id}`);
     this.logger.silly(`Swap ${response.id}: ${stringify(response)}`);
@@ -1720,15 +1729,19 @@ class SwapRouter extends RouterBase {
     const { id } = validateRequest(req.params, [
       { name: 'id', type: 'string' },
     ]);
-    const { invoice, pairHash } = validateRequest(req.body, [
+    const { invoice, extraFees, pairHash } = validateRequest(req.body, [
       { name: 'invoice', type: 'string' },
       { name: 'pairHash', type: 'string', optional: true },
+      { name: 'extraFees', type: 'object', optional: true },
     ]);
+
+    const extraFeesData = this.parseExtraFees(extraFees);
 
     const response = await this.service.setInvoice(
       id,
       invoice.toLowerCase(),
       pairHash,
+      extraFeesData,
     );
     successResponse(res, response);
   };
@@ -1816,13 +1829,17 @@ class SwapRouter extends RouterBase {
     successResponse(res, {});
   };
 
-  private getReverse = (_req: Request, res: Response) =>
+  private getReverse = async (req: Request, res: Response) => {
+    const referral = await this.getReferralFromHeader(req);
     successResponse(
       res,
       RateProviderTaproot.serializePairs(
-        this.service.rateProvider.providers[SwapVersion.Taproot].reversePairs,
+        this.service.rateProvider.providers[
+          SwapVersion.Taproot
+        ].getReversePairs(referral),
       ),
     );
+  };
 
   private createReverse = async (req: Request, res: Response) => {
     const {
@@ -1831,6 +1848,7 @@ class SwapRouter extends RouterBase {
       webhook,
       address,
       pairHash,
+      extraFees,
       description,
       routingNode,
       preimageHash,
@@ -1849,6 +1867,7 @@ class SwapRouter extends RouterBase {
       { name: 'address', type: 'string', optional: true },
       { name: 'webhook', type: 'object', optional: true },
       { name: 'pairHash', type: 'string', optional: true },
+      { name: 'extraFees', type: 'object', optional: true },
       { name: 'description', type: 'string', optional: true },
       { name: 'routingNode', type: 'string', optional: true },
       { name: 'claimAddress', type: 'string', optional: true },
@@ -1866,6 +1885,7 @@ class SwapRouter extends RouterBase {
 
     const { pairId, orderSide } = this.service.convertToPairAndSide(from, to);
     const webHookData = this.parseWebHook(webhook);
+    const extraFeesData = this.parseExtraFees(extraFees);
 
     const response = await this.service.createReverseSwap({
       pairId,
@@ -1885,11 +1905,12 @@ class SwapRouter extends RouterBase {
       userAddress: address,
       webHook: webHookData,
       prepayMinerFee: false,
+      extraFees: extraFeesData,
       version: SwapVersion.Taproot,
       userAddressSignature: addressSignature,
     });
 
-    await markSwap(this.countryCodes, req.ip, response.id);
+    await markSwap(this.service.sidecar, req.ip, response.id);
 
     this.logger.verbose(`Created Reverse Swap with id: ${response.id}`);
     this.logger.silly(`Reverse swap ${response.id}: ${stringify(response)}`);
@@ -1939,34 +1960,55 @@ class SwapRouter extends RouterBase {
       req.body,
       [
         { name: 'id', type: 'string', optional: params.id !== undefined },
-        { name: 'index', type: 'number' },
         { name: 'preimage', type: 'string', hex: true },
-        { name: 'pubNonce', type: 'string', hex: true },
-        { name: 'transaction', type: 'string', hex: true },
+        { name: 'index', type: 'number', optional: true },
+        { name: 'pubNonce', type: 'string', hex: true, optional: true },
+        { name: 'transaction', type: 'string', hex: true, optional: true },
       ],
     );
+
+    const toSignParams = [pubNonce, index, transaction];
+    const allDefined = toSignParams.every((param) => param !== undefined);
+    const allUndefined = toSignParams.every((param) => param === undefined);
+
+    if (!allDefined && !allUndefined) {
+      throw 'pubNonce, index and transaction must be all set or all undefined';
+    }
 
     const sig = await this.service.musigSigner.signReverseSwapClaim(
       params.id || id,
       preimage,
-      pubNonce,
-      transaction,
-      index,
+      allDefined
+        ? {
+            index,
+            theirNonce: pubNonce,
+            rawTransaction: transaction,
+          }
+        : undefined,
     );
 
-    successResponse(res, {
-      pubNonce: getHexString(sig.pubNonce),
-      partialSignature: getHexString(sig.signature),
-    });
+    successResponse(
+      res,
+      sig !== undefined
+        ? {
+            pubNonce: getHexString(sig.pubNonce),
+            partialSignature: getHexString(sig.signature),
+          }
+        : {},
+    );
   };
 
-  private getChain = (_req: Request, res: Response) =>
+  private getChain = async (req: Request, res: Response) => {
+    const referral = await this.getReferralFromHeader(req);
     successResponse(
       res,
       RateProviderTaproot.serializePairs(
-        this.service.rateProvider.providers[SwapVersion.Taproot].chainPairs,
+        this.service.rateProvider.providers[SwapVersion.Taproot].getChainPairs(
+          referral,
+        ),
       ),
     );
+  };
 
   // TODO: claim covenant
   private createChain = async (req: Request, res: Response) => {
@@ -1975,6 +2017,7 @@ class SwapRouter extends RouterBase {
       from,
       webhook,
       pairHash,
+      extraFees,
       referralId,
       preimageHash,
       claimAddress,
@@ -1988,6 +2031,7 @@ class SwapRouter extends RouterBase {
       { name: 'webhook', type: 'object', optional: true },
       { name: 'preimageHash', type: 'string', hex: true },
       { name: 'pairHash', type: 'string', optional: true },
+      { name: 'extraFees', type: 'object', optional: true },
       { name: 'referralId', type: 'string', optional: true },
       { name: 'claimAddress', type: 'string', optional: true },
       { name: 'userLockAmount', type: 'number', optional: true },
@@ -1998,6 +2042,7 @@ class SwapRouter extends RouterBase {
 
     checkPreimageHashLength(preimageHash);
     const webHookData = this.parseWebHook(webhook);
+    const extraFeesData = this.parseExtraFees(extraFees);
 
     const { pairId, orderSide } = this.service.convertToPairAndSide(from, to);
     const response = await this.service.createChainSwap({
@@ -2012,9 +2057,10 @@ class SwapRouter extends RouterBase {
       refundPublicKey,
       serverLockAmount,
       webHook: webHookData,
+      extraFees: extraFeesData,
     });
 
-    await markSwap(this.countryCodes, req.ip, response.id);
+    await markSwap(this.service.sidecar, req.ip, response.id);
 
     this.logger.verbose(`Created Chain Swap with id: ${response.id}`);
     this.logger.silly(`Chain swap ${response.id}: ${stringify(response)}`);
@@ -2246,6 +2292,37 @@ class SwapRouter extends RouterBase {
     }
 
     return res;
+  };
+
+  private parseExtraFees = (
+    data: Record<string, any> | undefined,
+  ): ExtraFees | undefined => {
+    if (data === undefined) {
+      return undefined;
+    }
+
+    const res = validateRequest(data, [
+      { name: 'id', type: 'string' },
+      { name: 'percentage', type: 'number' },
+    ]);
+
+    if (res.percentage <= 0 || res.percentage > 10) {
+      throw ApiErrors.INVALID_EXTRA_FEES_PERCENTAGE(res.percentage);
+    }
+
+    return {
+      id: res.id,
+      percentage: res.percentage,
+    };
+  };
+
+  private getReferralFromHeader = async (req: Request) => {
+    const referral = req.header('referral');
+    if (referral === undefined) {
+      return null;
+    }
+
+    return ReferralRepository.getReferralById(referral);
   };
 }
 

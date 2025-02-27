@@ -10,10 +10,13 @@ import {
   SwapVersion,
   swapTypeToPrettyString,
 } from '../consts/Enums';
+import Referral from '../db/models/Referral';
 import ChainSwapRepository, {
   ChainSwapInfo,
 } from '../db/repositories/ChainSwapRepository';
-import { ChainSwapMinerFees } from '../rates/FeeProvider';
+import ExtraFeeRepository from '../db/repositories/ExtraFeeRepository';
+import ReferralRepository from '../db/repositories/ReferralRepository';
+import FeeProvider, { ChainSwapMinerFees } from '../rates/FeeProvider';
 import RateProvider from '../rates/RateProvider';
 import ErrorsSwap from '../swap/Errors';
 import SwapNursery from '../swap/SwapNursery';
@@ -47,7 +50,7 @@ class Renegotiator {
     const { swap, receivingCurrency } = await this.getSwap(swapId);
     await this.validateEligibility(swap, receivingCurrency);
 
-    return this.calculateNewQuote(swap).serverLockAmount;
+    return (await this.calculateNewQuote(swap)).serverLockAmount;
   };
 
   // Do this in the refund signature lock to avoid creating refund signatures
@@ -58,8 +61,8 @@ class Renegotiator {
         const { swap, receivingCurrency } = await this.getSwap(swapId);
         await this.validateEligibility(swap, receivingCurrency);
 
-        const { serverLockAmount, percentageFee } =
-          this.calculateNewQuote(swap);
+        const { serverLockAmount, percentageFee, extraFee } =
+          await this.calculateNewQuote(swap);
         if (newQuote !== serverLockAmount) {
           throw Errors.INVALID_QUOTE();
         }
@@ -72,6 +75,10 @@ class Renegotiator {
         this.logger.info(
           `Accepted new quote for ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}: ${newQuote}`,
         );
+
+        if (extraFee !== undefined) {
+          await ExtraFeeRepository.setFee(swap.id, extraFee);
+        }
 
         if (receivingCurrency.chainClient !== undefined) {
           const txInfo =
@@ -183,7 +190,11 @@ class Renegotiator {
     };
   };
 
-  public getFees = (pairId: string, side: OrderSide) => ({
+  public getFees = (
+    pairId: string,
+    side: OrderSide,
+    referral: Referral | null,
+  ) => ({
     baseFee: this.rateProvider.feeProvider.getSwapBaseFees<ChainSwapMinerFees>(
       pairId,
       side,
@@ -195,11 +206,24 @@ class Renegotiator {
       side,
       SwapType.Chain,
       PercentageFeeType.Calculation,
+      referral,
     ),
   });
 
-  private calculateNewQuote = (swap: ChainSwapInfo) => {
-    const pair = this.rateProvider.providers[SwapVersion.Taproot].chainPairs
+  private calculateNewQuote = async (
+    swap: ChainSwapInfo,
+  ): Promise<
+    ReturnType<typeof this.calculateServerLockAmount> & {
+      extraFee?: number;
+    }
+  > => {
+    const referral =
+      swap.chainSwap.referral === null || swap.chainSwap.referral === undefined
+        ? null
+        : await ReferralRepository.getReferralById(swap.chainSwap.referral);
+
+    const pair = this.rateProvider.providers[SwapVersion.Taproot]
+      .getChainPairs(referral)
       .get(swap.receivingData.symbol)
       ?.get(swap.sendingData.symbol);
     if (pair === undefined) {
@@ -218,14 +242,37 @@ class Renegotiator {
       );
     }
 
-    const { baseFee, feePercent } = this.getFees(swap.pair, swap.orderSide);
+    const { baseFee, feePercent } = this.getFees(
+      swap.pair,
+      swap.orderSide,
+      referral,
+    );
 
-    return this.calculateServerLockAmount(
+    const serverLockAmount = this.calculateServerLockAmount(
       pair.rate,
       swap.receivingData.amount!,
       feePercent,
       baseFee,
     );
+
+    let extraFee: number | undefined = undefined;
+
+    const extraFees = await ExtraFeeRepository.get(swap.id);
+    if (extraFees !== undefined && extraFees !== null) {
+      extraFee = FeeProvider.calculateExtraFee(
+        extraFees.percentage,
+        swap.receivingData.amount!,
+        pair.rate,
+      );
+      serverLockAmount.serverLockAmount = Math.floor(
+        serverLockAmount.serverLockAmount - extraFee,
+      );
+    }
+
+    return {
+      ...serverLockAmount,
+      extraFee,
+    };
   };
 
   private validateEligibility = async (

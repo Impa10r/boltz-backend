@@ -8,6 +8,7 @@ import {
   splitPairId,
   stringify,
 } from '../Utils';
+import ApiErrors from '../api/Errors';
 import ElementsClient from '../chain/ElementsClient';
 import { etherDecimals, gweiDecimals } from '../consts/Consts';
 import {
@@ -20,6 +21,8 @@ import {
   swapTypeToString,
 } from '../consts/Enums';
 import { PairConfig } from '../consts/Types';
+import Referral from '../db/models/Referral';
+import { ExtraFees } from '../service/Service';
 import WalletLiquid from '../wallet/WalletLiquid';
 import WalletManager from '../wallet/WalletManager';
 import { Ethereum, Rsk } from '../wallet/ethereum/EvmNetworks';
@@ -132,6 +135,8 @@ class FeeProvider {
     },
   };
 
+  public static percentFeeDecimals = 2;
+
   private static readonly defaultFee = 1;
 
   // A map between the symbols of the pairs and their percentage fees
@@ -145,6 +150,28 @@ class FeeProvider {
     private dataAggregator: DataAggregator,
     private getFeeEstimation: (symbol: string) => Promise<Map<string, number>>,
   ) {}
+
+  public static addPremium = (fee: number, premium?: number): number => {
+    if (premium === null || premium === undefined) {
+      return fee;
+    }
+
+    return parseFloat(
+      (fee + premium / 100).toFixed(FeeProvider.percentFeeDecimals),
+    );
+  };
+
+  public static calculateExtraFee = (
+    percentage: number,
+    amount: number,
+    rate: number,
+  ): number => {
+    if (percentage < 0) {
+      throw ApiErrors.INVALID_EXTRA_FEES_PERCENTAGE(percentage);
+    }
+
+    return Math.ceil((percentage / 100) * amount * rate);
+  };
 
   public init = (pairs: PairConfig[]): void => {
     pairs.forEach((pair) => {
@@ -203,6 +230,7 @@ class FeeProvider {
     orderSide: OrderSide,
     type: SwapType,
     feeType: PercentageFeeType = PercentageFeeType.Calculation,
+    referral: Referral | null,
   ): number => {
     const percentages = this.percentageFees.get(pair);
     if (percentages === undefined) {
@@ -210,10 +238,12 @@ class FeeProvider {
     }
 
     const percentageType = percentages[type];
-    const percentage =
+    const percentage = FeeProvider.addPremium(
       typeof percentageType === 'number'
         ? percentageType
-        : percentageType[orderSide];
+        : percentageType[orderSide],
+      referral?.premium(pair, type),
+    );
 
     return feeType === PercentageFeeType.Calculation
       ? percentage / 100
@@ -228,15 +258,19 @@ class FeeProvider {
     amount: number,
     type: SwapType,
     feeType: BaseFeeType,
+    referral: Referral | null,
+    extraFees: ExtraFees | undefined,
   ): {
     baseFee: number;
     percentageFee: number;
+    extraFee?: number;
   } => {
     let percentageFee = this.getPercentageFee(
       pair,
       orderSide,
       type,
       PercentageFeeType.Calculation,
+      referral,
     );
 
     if (percentageFee !== 0) {
@@ -251,7 +285,18 @@ class FeeProvider {
       type === SwapType.ReverseSubmarine,
     );
 
+    let extraFee: number | undefined = undefined;
+
+    if (extraFees !== undefined) {
+      extraFee = FeeProvider.calculateExtraFee(
+        extraFees.percentage,
+        amount,
+        rate,
+      );
+    }
+
     return {
+      extraFee,
       percentageFee: Math.ceil(percentageFee),
       baseFee: this.getBaseFee(chainCurrency, swapVersion, feeType),
     };
@@ -374,7 +419,8 @@ class FeeProvider {
         );
 
         const fees = {
-          normal: claimCost,
+          // We batch claims on the backend
+          normal: Math.ceil(claimCost / 2),
           reverse: {
             claim: claimCost,
             lockup: FeeProvider.calculateEtherGasCost(
@@ -409,7 +455,7 @@ class FeeProvider {
         );
 
         const fees = {
-          normal: claimCost,
+          normal: Math.ceil(claimCost / 2),
           reverse: {
             claim: claimCost,
             lockup: FeeProvider.calculateTokenGasCosts(

@@ -3,13 +3,15 @@ use crate::utils::built_info;
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::Path;
-use tracing::{debug, error, info, warn, Subscriber};
+use tracing::{Subscriber, debug, error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload::Handle;
-use tracing_subscriber::{fmt, reload, EnvFilter, Layer, Registry};
+use tracing_subscriber::{EnvFilter, Layer, Registry, fmt, reload};
 
 #[cfg(feature = "otel")]
 use opentelemetry::trace::TracerProvider;
+#[cfg(feature = "otel")]
+use opentelemetry_otlp::WithExportConfig;
 
 #[derive(Clone)]
 pub struct ReloadHandler {
@@ -176,40 +178,38 @@ fn init_tracer(
         return Ok(None);
     }
 
-    use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry_sdk::runtime;
-
     info!("Enabling OpenTelemetry");
 
     opentelemetry::global::set_text_map_propagator(
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
 
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_trace_config(opentelemetry_sdk::trace::Config::default().with_resource(
-            opentelemetry_sdk::Resource::new(vec![
-                opentelemetry::KeyValue::new(
-                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                    crate::utils::get_name(&crate::utils::get_network(&config.network)),
-                ),
-                opentelemetry::KeyValue::new(
-                    opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-                    built_info::PKG_VERSION,
-                ),
-                opentelemetry::KeyValue::new(
-                    opentelemetry_semantic_conventions::resource::PROCESS_PID,
-                    std::process::id().to_string(),
-                ),
-            ]),
-        ))
-        .with_batch_config(opentelemetry_sdk::trace::BatchConfig::default())
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(endpoint.unwrap()),
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_endpoint(endpoint.unwrap())
+        .build()?;
+
+    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_attributes(vec![
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                        crate::utils::get_name(&crate::utils::get_network(&config.network)),
+                    ),
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                        built_info::PKG_VERSION,
+                    ),
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::PROCESS_PID,
+                        std::process::id().to_string(),
+                    ),
+                ])
+                .build(),
         )
-        .install_batch(runtime::Tokio)?;
+        .with_batch_exporter(exporter)
+        .build();
 
     Ok(Some(tracer.tracer(built_info::PKG_NAME)))
 }

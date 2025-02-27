@@ -6,6 +6,7 @@ import {
   getSendingChain,
   hashString,
   mapToObject,
+  roundToDecimals,
   splitPairId,
 } from '../../Utils';
 import {
@@ -15,6 +16,7 @@ import {
   SwapVersion,
 } from '../../consts/Enums';
 import { ChainSwapPairConfig, PairConfig } from '../../consts/Types';
+import Referral from '../../db/models/Referral';
 import Errors from '../../service/Errors';
 import NodeSwitch from '../../swap/NodeSwitch';
 import { Currency } from '../../wallet/WalletManager';
@@ -43,6 +45,7 @@ type SubmarinePairTypeTaproot = PairTypeTaproot & {
   fees: {
     percentage: number;
     minerFees: number;
+    maximalRoutingFee?: number;
   };
 };
 
@@ -68,17 +71,17 @@ type SwapTypes =
   | ChainPairTypeTaproot;
 
 class RateProviderTaproot extends RateProviderBase<SwapTypes> {
-  public readonly submarinePairs = new Map<
+  private readonly submarinePairs = new Map<
     string,
     Map<string, SubmarinePairTypeTaproot>
   >();
 
-  public readonly reversePairs = new Map<
+  private readonly reversePairs = new Map<
     string,
     Map<string, ReversePairTypeTaproot>
   >();
 
-  public readonly chainPairs = new Map<
+  private readonly chainPairs = new Map<
     string,
     Map<string, ChainPairTypeTaproot>
   >();
@@ -92,6 +95,48 @@ class RateProviderTaproot extends RateProviderBase<SwapTypes> {
   ) {
     super(currencies, feeProvider, minSwapSizeMultipliers);
   }
+
+  public getSubmarinePairs = (
+    referral?: Referral | null,
+  ): typeof this.submarinePairs => {
+    if (referral === null || referral === undefined) {
+      return this.submarinePairs;
+    }
+
+    return this.deepCloneWithReferral(
+      this.submarinePairs,
+      SwapType.Submarine,
+      referral,
+    );
+  };
+
+  public getReversePairs = (
+    referral?: Referral | null,
+  ): typeof this.reversePairs => {
+    if (referral === null || referral === undefined) {
+      return this.reversePairs;
+    }
+
+    return this.deepCloneWithReferral(
+      this.reversePairs,
+      SwapType.ReverseSubmarine,
+      referral,
+    );
+  };
+
+  public getChainPairs = (
+    referral?: Referral | null,
+  ): typeof this.chainPairs => {
+    if (referral === null || referral === undefined) {
+      return this.chainPairs;
+    }
+
+    return this.deepCloneWithReferral(
+      this.chainPairs,
+      SwapType.Chain,
+      referral,
+    );
+  };
 
   public static serializePairs = <T>(
     map: Map<string, Map<string, T>>,
@@ -345,6 +390,7 @@ class RateProviderTaproot extends RateProviderBase<SwapTypes> {
           orderSide,
           type,
           PercentageFeeType.Display,
+          null,
         ),
         minerFees,
       },
@@ -443,10 +489,98 @@ class RateProviderTaproot extends RateProviderBase<SwapTypes> {
 
     return cur.chainClient !== undefined || cur.provider !== undefined;
   };
+
+  private deepCloneWithReferral = <
+    T extends
+      | SubmarinePairTypeTaproot
+      | ReversePairTypeTaproot
+      | ChainPairTypeTaproot,
+    K extends Map<string, Map<string, T>>,
+  >(
+    map: K,
+    type: SwapType,
+    referral?: Referral | null,
+  ): K => {
+    return new Map(
+      Array.from(map.entries()).map(([from, nested]) => [
+        from,
+        new Map(
+          Array.from(nested.entries()).map(([to, value]) => {
+            const pairIds = [
+              [from, to],
+              [to, from],
+            ].map(([base, quote]) => getPairId({ base, quote }));
+
+            const premium = referral?.premiumForPairs(pairIds, type);
+            const limits = referral?.limitsForPairs(pairIds, type);
+
+            const result = {
+              ...value,
+              limits: {
+                ...value.limits,
+                minimal: this.applyOverride(
+                  Math.max,
+                  value.limits.minimal,
+                  limits?.minimal,
+                ),
+                maximal: this.applyOverride(
+                  Math.min,
+                  value.limits.maximal,
+                  limits?.maximal,
+                ),
+              },
+              fees: {
+                ...value.fees,
+                percentage: FeeProvider.addPremium(
+                  value.fees.percentage,
+                  premium,
+                ),
+              },
+            };
+
+            if (type === SwapType.Submarine) {
+              const maxRoutingFeeOverride =
+                referral?.maxRoutingFeeRatioForPairs(pairIds);
+
+              if (maxRoutingFeeOverride !== undefined) {
+                (result as SubmarinePairTypeTaproot).fees.maximalRoutingFee =
+                  roundToDecimals(maxRoutingFeeOverride * 100, 4);
+              } else {
+                const currency = this.currencies.get(to);
+
+                (result as SubmarinePairTypeTaproot).fees.maximalRoutingFee =
+                  roundToDecimals(
+                    (currency?.lndClient?.maxPaymentFeeRatio ||
+                      currency?.clnClient?.maxPaymentFeeRatio ||
+                      0) * 100,
+                    4,
+                  );
+              }
+            }
+
+            return [to, result];
+          }),
+        ),
+      ]),
+    ) as K;
+  };
+
+  private applyOverride = (
+    compFunc: (...values: number[]) => number,
+    original: number,
+    override?: number,
+  ): number => {
+    if (override === undefined) {
+      return original;
+    }
+
+    return compFunc(original, override);
+  };
 }
 
 export default RateProviderTaproot;
 export {
+  SwapTypes,
   SubmarinePairTypeTaproot,
   ReversePairTypeTaproot,
   ChainPairTypeTaproot,

@@ -11,6 +11,7 @@ service BoltzR {
   rpc GetMessages (GetMessagesRequest) returns (stream GetMessagesResponse);
 
   rpc SwapUpdate (stream SwapUpdateRequest) returns (stream SwapUpdateResponse);
+  rpc SendSwapUpdate (SendSwapUpdateRequest) returns (stream SendSwapUpdateResponse);
 
   rpc StartWebHookRetries (StartWebHookRetriesRequest) returns (StartWebHookRetriesResponse);
   rpc CreateWebHook (CreateWebHookRequest) returns (CreateWebHookResponse);
@@ -19,7 +20,8 @@ service BoltzR {
   rpc SignEvmRefund (SignEvmRefundRequest) returns (SignEvmRefundResponse);
 
   rpc DecodeInvoiceOrOffer (DecodeInvoiceOrOfferRequest) returns (DecodeInvoiceOrOfferResponse);
-  rpc FetchInvoice (FetchInvoiceRequest) returns (FetchInvoiceResponse);
+
+  rpc IsMarked (IsMarkedRequest) returns (IsMarkedResponse);
 
   rpc ScanMempool (ScanMempoolRequest) returns (ScanMempoolResponse);
 }
@@ -90,6 +92,11 @@ message SwapUpdateRequest {
 
 message SwapUpdateResponse {
   repeated string ids = 1;
+}
+
+message SendSwapUpdateRequest {}
+message SendSwapUpdateResponse {
+  SwapUpdate update = 1;
 }
 
 message StartWebHookRetriesRequest {}
@@ -209,14 +216,12 @@ message DecodeInvoiceOrOfferResponse {
   }
 }
 
-message FetchInvoiceRequest {
-  string currency = 1;
-  string offer = 2;
-  uint64 amount_msat = 3;
+message IsMarkedRequest {
+  string ip = 1;
 }
 
-message FetchInvoiceResponse {
-  string invoice = 1;
+message IsMarkedResponse {
+  bool is_marked = 1;
 }
 
 message ScanMempoolRequest {

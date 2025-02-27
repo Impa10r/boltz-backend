@@ -1,5 +1,9 @@
 use crate::config::parse_config;
 use crate::currencies::connect_nodes;
+use crate::db::helpers::chain_swap::ChainSwapHelperDatabase;
+use crate::db::helpers::keys::KeysHelperDatabase;
+use crate::db::helpers::swap::SwapHelperDatabase;
+use crate::service::Service;
 use crate::swap::manager::Manager;
 use api::ws;
 use clap::Parser;
@@ -10,6 +14,7 @@ use tracing::{debug, error, info, trace, warn};
 
 mod api;
 mod backup;
+mod cache;
 mod chain;
 mod config;
 mod currencies;
@@ -18,6 +23,7 @@ mod evm;
 mod grpc;
 mod lightning;
 mod notifications;
+mod service;
 mod swap;
 mod tracing_setup;
 mod utils;
@@ -26,6 +32,9 @@ mod webhook;
 
 #[cfg(feature = "metrics")]
 mod metrics;
+
+#[cfg(feature = "otel")]
+mod profiling;
 
 #[derive(Parser, Serialize, Debug, Clone)]
 #[command(author = "Boltz", about = "Boltz Backend sidecar", version, about, long_about = None)]
@@ -65,6 +74,9 @@ async fn main() {
         },
     );
 
+    #[cfg(feature = "otel")]
+    let profiling_agent = profiling::start(&config);
+
     info!(
         "Starting {} v{}",
         utils::built_info::PKG_NAME,
@@ -85,6 +97,19 @@ async fn main() {
         error!("Could not connect to database: {}", err);
         std::process::exit(1);
     });
+
+    let cache = if let Some(config) = config.cache {
+        Some(match cache::Redis::new(&config).await {
+            Ok(cache) => cache,
+            Err(err) => {
+                error!("Could not connect to cache: {}", err);
+                std::process::exit(1);
+            }
+        })
+    } else {
+        warn!("No cache was configured");
+        None
+    };
 
     // TODO: move to currencies
     let refund_signer = if let Some(rsk_config) = config.rsk {
@@ -120,6 +145,8 @@ async fn main() {
 
     let currencies = match connect_nodes(
         cancellation_token.clone(),
+        KeysHelperDatabase::new(db_pool.clone()),
+        config.mnemonic_path,
         config.network,
         config.currencies,
         config.liquid,
@@ -132,6 +159,25 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    let service = Arc::new(Service::new(
+        Arc::new(SwapHelperDatabase::new(db_pool.clone())),
+        Arc::new(ChainSwapHelperDatabase::new(db_pool.clone())),
+        currencies.clone(),
+        config.marking,
+        config.historical,
+        cache,
+    ));
+    {
+        let service = service.clone();
+        let cancellation_token = cancellation_token.clone();
+        tokio::spawn(async move {
+            if let Err(err) = service.start().await {
+                error!("Could not start service: {}", err);
+                cancellation_token.cancel();
+            }
+        });
+    }
 
     let backup_client = if let Some(backup_config) = config.backup {
         match backup::Backup::new(
@@ -195,11 +241,18 @@ async fn main() {
     let (swap_status_update_tx, _swap_status_update_rx) =
         tokio::sync::broadcast::channel::<Vec<ws::types::SwapStatus>>(128);
 
+    let swap_manager = Arc::new(Manager::new(
+        cancellation_token.clone(),
+        currencies,
+        db_pool.clone(),
+    ));
+
     let mut grpc_server = grpc::server::Server::new(
         cancellation_token.clone(),
         config.sidecar.grpc,
         log_reload_handler,
-        Arc::new(Manager::new(currencies, db_pool.clone())),
+        service.clone(),
+        swap_manager.clone(),
         swap_status_update_tx.clone(),
         Box::new(db::helpers::web_hook::WebHookHelperDatabase::new(db_pool)),
         web_hook_caller,
@@ -213,6 +266,8 @@ async fn main() {
     let api_server = api::Server::new(
         config.sidecar.api,
         cancellation_token.clone(),
+        swap_manager.clone(),
+        service,
         grpc_server.status_fetcher(),
         swap_status_update_tx.clone(),
     );
@@ -253,6 +308,10 @@ async fn main() {
         }
     });
 
+    let swap_manager_handler = tokio::spawn(async move {
+        swap_manager.start().await;
+    });
+
     ctrlc::set_handler(move || {
         info!("Got shutdown signal");
         cancellation_token.cancel();
@@ -269,10 +328,19 @@ async fn main() {
     api_handle.await.unwrap();
     grpc_handle.await.unwrap();
     status_ws_handler.await.unwrap();
+    swap_manager_handler.await.unwrap();
     notification_listener_handle.await.unwrap();
 
     #[cfg(feature = "metrics")]
     metrics_handle.await.unwrap();
+
+    #[cfg(feature = "otel")]
+    {
+        if let Some(agent) = profiling_agent {
+            let agent = agent.stop().unwrap();
+            agent.shutdown();
+        }
+    }
 
     info!("Exiting");
 }

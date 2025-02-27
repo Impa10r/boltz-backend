@@ -2,7 +2,7 @@ import Logger from '../../Logger';
 import { formatError } from '../../Utils';
 import { NodeType } from '../../db/models/ReverseSwap';
 import LightningNursery from '../../swap/LightningNursery';
-import { LightningClient } from '../LightningClient';
+import { LightningClient, PaymentResponse } from '../LightningClient';
 import ClnClient from '../cln/ClnClient';
 import NodePendingPendingTracker from './NodePendingPaymentTracker';
 
@@ -31,6 +31,24 @@ class ClnPendingPaymentTracker extends NodePendingPendingTracker {
 
   public stop = () => {
     clearInterval(this.checkInterval as unknown as number);
+  };
+
+  public trackPayment = (
+    client: LightningClient,
+    preimageHash: string,
+    invoice: string,
+    promise: Promise<PaymentResponse>,
+  ): void => {
+    promise
+      .then((result) => this.handleSucceededPayment(preimageHash, result))
+      .catch((error) => {
+        // CLN xpay throws errors while the payment is still pending
+        if (!this.isPermanentError(error)) {
+          this.watchPayment(client, invoice, preimageHash);
+        } else {
+          this.handleFailedPayment(client, preimageHash, error);
+        }
+      });
   };
 
   public watchPayment = (
@@ -63,19 +81,28 @@ class ClnPendingPaymentTracker extends NodePendingPendingTracker {
       { client, invoice },
     ] of this.paymentsToWatch.entries()) {
       try {
-        const res = await client.checkPayStatus(invoice);
-        if (res === undefined) {
-          continue;
-        }
+        const { decoded, pays } = await client.listPays(invoice);
+        const res = await client.checkListPaysStatus(decoded, pays);
+        if (pays.length === 0) {
+          this.handleFailedPayment(
+            client,
+            preimageHash,
+            'no attempts have been made',
+          );
+        } else {
+          if (res === undefined) {
+            continue;
+          }
 
-        await this.handleSucceededPayment(preimageHash, res);
+          await this.handleSucceededPayment(preimageHash, res);
+        }
       } catch (e) {
         // Ignore when the payment is pending; it's not a payment error
         if (e === ClnClient.paymentPendingError) {
           continue;
         }
 
-        await this.handleFailedPayment(preimageHash, e);
+        await this.handleFailedPayment(client, preimageHash, e);
       }
 
       this.paymentsToWatch.delete(preimageHash);

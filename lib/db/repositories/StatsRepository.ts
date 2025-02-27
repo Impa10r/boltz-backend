@@ -58,6 +58,11 @@ type LockedFunds = {
 };
 
 class StatsRepository {
+  private static readonly expirationFailureReasons = [
+    'invoice expired',
+    'swap expired',
+  ];
+
   private static readonly queryVolume =
     // language=PostgreSQL
     `
@@ -159,13 +164,13 @@ ORDER BY year, month, pair NULLS FIRST;
     // language=PostgreSQL
     `
 WITH data AS (
-    SELECT pair, 'submarine' AS type, status, referral, "createdAt"
+    SELECT pair, 'submarine' AS type, status, "failureReason", referral, "createdAt"
     FROM swaps
     UNION ALL
-    SELECT pair, 'reverse' AS type, status, referral, "createdAt"
+    SELECT pair, 'reverse' AS type, status, "failureReason",referral, "createdAt"
     FROM "reverseSwaps"
     UNION ALL
-    SELECT pair, 'chain' AS type, status, referral, "createdAt"
+    SELECT pair, 'chain' AS type, status, "failureReason", referral, "createdAt"
     FROM "chainSwaps"
 )
 SELECT
@@ -174,6 +179,7 @@ SELECT
     type,
     COUNT(*) FILTER (
         WHERE status IN (?)
+          AND "failureReason" NOT IN (?)
     ) / CAST(COUNT(*) AS REAL) AS "failureRate"
 FROM data
 WHERE
@@ -195,7 +201,7 @@ WITH data AS (
         'swap' AS type,
         CASE
             WHEN status = ? THEN 'success'
-            WHEN status = ? THEN 'failure'
+            WHEN status = ? AND "failureReason" NOT IN (?) THEN 'failure'
             ELSE 'timeout'
         END AS status
     FROM swaps
@@ -389,6 +395,7 @@ GROUP BY pair, type;
           SwapUpdateEvent.InvoiceFailedToPay,
           SwapUpdateEvent.TransactionRefunded,
         ],
+        StatsRepository.expirationFailureReasons,
         referral,
         referral,
         minYear,
@@ -404,6 +411,7 @@ GROUP BY pair, type;
       values: [
         SwapUpdateEvent.TransactionClaimed,
         SwapUpdateEvent.InvoiceFailedToPay,
+        StatsRepository.expirationFailureReasons,
         SwapUpdateEvent.InvoiceSettled,
         [
           SwapUpdateEvent.TransactionFailed,

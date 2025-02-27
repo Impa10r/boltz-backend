@@ -47,7 +47,7 @@ class ElementsWrapper
       );
     }
 
-    this.logger.info(`Using 0-conf check ${this.zeroConfCheck.name}`);
+    this.logger.info(`Using 0-conf check: ${this.zeroConfCheck.name}`);
   }
 
   public serviceName = () => 'ElementsWrapper';
@@ -65,13 +65,29 @@ class ElementsWrapper
     // of the public client
     const hasLowball = this.lowballClient() !== undefined;
 
-    this.publicClient().on('transaction', ({ transaction, confirmed }) => {
-      if (hasLowball && !confirmed) {
-        return;
-      }
+    this.publicClient().on(
+      'transaction',
+      async ({ transaction, confirmed }) => {
+        if (hasLowball && !confirmed) {
+          return;
+        }
 
-      this.emit('transaction', { transaction, confirmed });
-    });
+        if (confirmed) {
+          this.emit('transaction', { transaction, confirmed });
+          return;
+        }
+
+        try {
+          if (await this.zeroConfCheck.checkTransaction(transaction)) {
+            this.emit('transaction', { transaction, confirmed });
+          }
+        } catch (e) {
+          this.logger.error(
+            `${this.symbol} 0-conf transaction check failed: ${formatError(e)}`,
+          );
+        }
+      },
+    );
 
     this.lowballClient()?.on(
       'transaction',

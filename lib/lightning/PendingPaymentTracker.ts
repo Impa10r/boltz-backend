@@ -6,7 +6,9 @@ import LightningPayment, {
   LightningPaymentStatus,
 } from '../db/models/LightningPayment';
 import { NodeType, nodeTypeToPrettyString } from '../db/models/ReverseSwap';
+import Swap from '../db/models/Swap';
 import LightningPaymentRepository from '../db/repositories/LightningPaymentRepository';
+import ReferralRepository from '../db/repositories/ReferralRepository';
 import Sidecar from '../sidecar/Sidecar';
 import { Currency } from '../wallet/WalletManager';
 import { LightningClient, PaymentResponse } from './LightningClient';
@@ -76,20 +78,56 @@ class PendingPaymentTracker {
     }
   };
 
-  public sendPayment = async (
-    swapId: string,
-    lightningClient: LightningClient,
-    invoice: string,
-    cltvLimit?: number,
-    outgoingChannelId?: string,
-  ): Promise<PaymentResponse | undefined> => {
+  public getRelevantNode = async (
+    lightningCurrency: Currency,
+    swap: Swap,
+    preferredNode: LightningClient,
+  ): Promise<{
+    paymentHash: string;
+    node: LightningClient;
+    payments: LightningPayment[];
+  }> => {
     const paymentHash = getHexString(
-      (await this.sidecar.decodeInvoiceOrOffer(invoice)).paymentHash!,
+      (await this.sidecar.decodeInvoiceOrOffer(swap.invoice!)).paymentHash!,
     );
 
     const payments =
       await LightningPaymentRepository.findByPreimageHash(paymentHash);
 
+    const existingRelevantAction = payments.find(
+      (p) =>
+        p.status === LightningPaymentStatus.Success ||
+        p.status === LightningPaymentStatus.Pending ||
+        p.status === LightningPaymentStatus.PermanentFailure,
+    );
+    if (existingRelevantAction === undefined) {
+      return {
+        payments,
+        paymentHash,
+        node: preferredNode,
+      };
+    }
+
+    const node = [
+      lightningCurrency.lndClient,
+      lightningCurrency.clnClient,
+    ].find((n) => n?.type === existingRelevantAction.node);
+
+    return {
+      payments,
+      paymentHash,
+      node: node || preferredNode,
+    };
+  };
+
+  public sendPayment = async (
+    swap: Swap,
+    lightningClient: LightningClient,
+    paymentHash: string,
+    payments: LightningPayment[],
+    cltvLimit?: number,
+    outgoingChannelId?: string,
+  ): Promise<PaymentResponse | undefined> => {
     for (const status of [
       LightningPaymentStatus.Pending,
       LightningPaymentStatus.Success,
@@ -103,43 +141,41 @@ class PendingPaymentTracker {
       switch (status) {
         case LightningPaymentStatus.Pending:
           this.logger.verbose(
-            `Invoice payment of ${swapId} (${paymentHash}) still pending with node ${nodeTypeToPrettyString(relevant.node)}`,
+            `Invoice payment of ${swap.id} (${paymentHash}) still pending with node ${nodeTypeToPrettyString(relevant.node)}`,
           );
           return undefined;
 
         case LightningPaymentStatus.Success:
-          return this.getSuccessfulPaymentDetails(
-            swapId,
+          return await this.getSuccessfulPaymentDetails(
+            swap.id,
             relevant,
             lightningClient.symbol,
             paymentHash,
-            invoice,
+            swap.invoice!,
           );
 
         case LightningPaymentStatus.PermanentFailure:
           return await this.getPermanentFailureDetails(
-            swapId,
+            swap.id,
             relevant,
             lightningClient.symbol,
           );
       }
     }
 
-    return this.sendPaymentWithNode(
-      swapId,
+    return await this.sendPaymentWithNode(
+      swap,
       lightningClient,
       paymentHash,
-      invoice,
       cltvLimit,
       outgoingChannelId,
     );
   };
 
   private sendPaymentWithNode = async (
-    swapId: string,
+    swap: Swap,
     lightningClient: LightningClient,
     preimageHash: string,
-    invoice: string,
     cltvLimit?: number,
     outgoingChannelId?: string,
   ) => {
@@ -148,12 +184,18 @@ class PendingPaymentTracker {
       node: lightningClient.type,
     });
 
+    const referral =
+      swap.referral !== undefined && swap.referral !== null
+        ? await ReferralRepository.getReferralById(swap.referral)
+        : null;
+
     let paymentPromise: Promise<PaymentResponse> | undefined = undefined;
     try {
       paymentPromise = lightningClient.sendPayment(
-        invoice,
+        swap.invoice!,
         cltvLimit,
         outgoingChannelId,
+        referral?.maxRoutingFeeRatio(swap.pair),
       );
       const res = await racePromise(
         paymentPromise,
@@ -173,17 +215,31 @@ class PendingPaymentTracker {
         paymentPromise !== undefined
       ) {
         this.lightningTrackers[lightningClient.type].trackPayment(
+          lightningClient,
           preimageHash,
+          swap.invoice!,
           paymentPromise,
         );
         this.logger.verbose(
-          `Invoice payment of ${swapId} (${preimageHash}) is still pending with node ${nodeTypeToPrettyString(lightningClient.type)} after ${PendingPaymentTracker.raceTimeout} seconds`,
+          `Invoice payment of ${swap.id} (${preimageHash}) is still pending with node ${nodeTypeToPrettyString(lightningClient.type)} after ${PendingPaymentTracker.raceTimeout} seconds`,
         );
         return undefined;
       }
 
       const isPermanentError =
         this.lightningTrackers[lightningClient.type].isPermanentError(e);
+
+      // CLN xpay does throw errors while the payment is still pending
+      if (lightningClient.type === NodeType.CLN && !isPermanentError) {
+        this.lightningTrackers[lightningClient.type].watchPayment(
+          lightningClient,
+          swap.invoice!,
+          preimageHash,
+        );
+
+        return undefined;
+      }
+
       await LightningPaymentRepository.setStatus(
         preimageHash,
         lightningClient.type,

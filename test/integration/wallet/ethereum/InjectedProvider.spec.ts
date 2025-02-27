@@ -1,3 +1,4 @@
+import { Transaction } from 'ethers';
 import { RskConfig } from '../../../../lib/Config';
 import Logger from '../../../../lib/Logger';
 import PendingEthereumTransactionRepository from '../../../../lib/db/repositories/PendingEthereumTransactionRepository';
@@ -16,6 +17,7 @@ jest.mock(
   '../../../../lib/db/repositories/PendingEthereumTransactionRepository',
   () => ({
     addTransaction: jest.fn().mockResolvedValue(null),
+    getHighestNonce: jest.fn().mockResolvedValue(undefined),
   }),
 );
 
@@ -25,10 +27,7 @@ describe('InjectedProvider', () => {
   beforeAll(async () => {
     provider = new InjectedProvider(Logger.disabledLogger, Ethereum, {
       providerEndpoint,
-      tokens: [],
-      etherSwapAddress: '0x',
-      erc20SwapAddress: '0x',
-    });
+    } as never);
     await provider.init();
   });
 
@@ -57,6 +56,33 @@ describe('InjectedProvider', () => {
     ).resolves.toEqual(null);
   });
 
+  describe('getTransactionCount', () => {
+    const address = '0x0000000000000000000000000000000000000000';
+
+    afterAll(() => {
+      PendingEthereumTransactionRepository.getHighestNonce = jest
+        .fn()
+        .mockResolvedValue(undefined);
+    });
+
+    test('should get transaction count from provider when there are no pending transactions', async () => {
+      PendingEthereumTransactionRepository.getHighestNonce = jest
+        .fn()
+        .mockResolvedValue(undefined);
+      await expect(provider.getTransactionCount(address)).resolves.toEqual(0);
+    });
+
+    test('should get transaction count from db when there are pending transactions', async () => {
+      const highestNonce = 10;
+      PendingEthereumTransactionRepository.getHighestNonce = jest
+        .fn()
+        .mockResolvedValue(highestNonce);
+      await expect(provider.getTransactionCount(address)).resolves.toEqual(
+        highestNonce,
+      );
+    });
+  });
+
   test('should save broadcast transactions to database', async () => {
     const setup = await getSigner();
     await fundSignerWallet(setup.signer, setup.etherBase);
@@ -64,6 +90,7 @@ describe('InjectedProvider', () => {
 
     const tx = await signer.sendTransaction({
       to: await signer.getAddress(),
+      value: 321,
     });
 
     expect(
@@ -71,6 +98,11 @@ describe('InjectedProvider', () => {
     ).toHaveBeenCalledTimes(1);
     expect(
       PendingEthereumTransactionRepository.addTransaction,
-    ).toHaveBeenCalledWith(tx.hash, tx.nonce);
+    ).toHaveBeenCalledWith(
+      tx.hash,
+      tx.nonce,
+      tx.value,
+      Transaction.from(tx).serialized,
+    );
   });
 });

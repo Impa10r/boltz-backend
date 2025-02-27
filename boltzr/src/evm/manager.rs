@@ -1,7 +1,7 @@
-use crate::evm::refund_signer::LocalRefundSigner;
 use crate::evm::RefundSigner;
+use crate::evm::refund_signer::LocalRefundSigner;
 use alloy::network::{AnyNetwork, EthereumWallet};
-use alloy::primitives::{Address, FixedBytes, Signature, U256};
+use alloy::primitives::{Address, FixedBytes, PrimitiveSignature, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::signers::local::coins_bip39::English;
 use alloy::signers::local::{MnemonicBuilder, PrivateKeySigner};
@@ -27,7 +27,7 @@ impl Manager {
         debug!("Read mnemonic");
 
         let signer = MnemonicBuilder::<English>::default()
-            .phrase(mnemonic.strip_suffix("\n").unwrap_or(mnemonic.as_str()))
+            .phrase(mnemonic.trim())
             .index(0)?
             .build()?;
 
@@ -43,7 +43,6 @@ impl Manager {
 
         let provider = ProviderBuilder::new()
             .network::<AnyNetwork>()
-            .with_recommended_fillers()
             .wallet(EthereumWallet::from(signer.clone()))
             .on_http(config.provider_endpoint.parse()?);
 
@@ -94,7 +93,7 @@ impl RefundSigner for Manager {
         amount: U256,
         token_address: Option<Address>,
         timeout: u64,
-    ) -> anyhow::Result<Signature> {
+    ) -> anyhow::Result<PrimitiveSignature> {
         match self.refund_signers.get(&contract_version) {
             Some(signer) => {
                 signer
@@ -117,8 +116,8 @@ mod test {
     };
     use crate::evm::{Config, ContractAddresses, RefundSigner};
     use alloy::primitives::{Address, FixedBytes};
-    use alloy::signers::local::coins_bip39::English;
     use alloy::signers::local::MnemonicBuilder;
+    use alloy::signers::local::coins_bip39::English;
     use serial_test::serial;
     use std::fs;
     use std::path::Path;
@@ -202,27 +201,31 @@ mod test {
     async fn test_sign_cooperative_refund() {
         let manager = new_manager().await;
 
-        assert!(manager
-            .sign_cooperative_refund(
-                4,
-                FixedBytes::<32>::default(),
-                crate::evm::utils::parse_wei("1").unwrap(),
-                None,
-                1,
-            )
-            .await
-            .is_ok());
+        assert!(
+            manager
+                .sign_cooperative_refund(
+                    4,
+                    FixedBytes::<32>::default(),
+                    crate::evm::utils::parse_wei("1").unwrap(),
+                    None,
+                    1,
+                )
+                .await
+                .is_ok()
+        );
 
-        assert!(manager
-            .sign_cooperative_refund(
-                0,
-                FixedBytes::<32>::default(),
-                crate::evm::utils::parse_wei("1").unwrap(),
-                None,
-                1,
-            )
-            .await
-            .is_err());
+        assert!(
+            manager
+                .sign_cooperative_refund(
+                    0,
+                    FixedBytes::<32>::default(),
+                    crate::evm::utils::parse_wei("1").unwrap(),
+                    None,
+                    1,
+                )
+                .await
+                .is_err()
+        );
     }
 
     async fn new_manager() -> Manager {

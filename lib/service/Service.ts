@@ -1,3 +1,4 @@
+import { Transaction } from 'bitcoinjs-lib';
 import { OutputType, SwapTreeSerializer } from 'boltz-core';
 import { Provider } from 'ethers';
 import { Transaction as LiquidTransaction } from 'liquidjs-lib';
@@ -6,6 +7,9 @@ import { ConfigType } from '../Config';
 import { parseTransaction } from '../Core';
 import Logger, { LogLevel } from '../Logger';
 import {
+  calculateEthereumTransactionFeeWithReceipt,
+  calculateLiquidTransactionFee,
+  calculateUtxoTransactionFee,
   checkEvmAddress,
   createApiCredential,
   formatError,
@@ -42,12 +46,14 @@ import {
   SwapVersion,
 } from '../consts/Enums';
 import { AnySwap, PairConfig } from '../consts/Types';
+import Referral from '../db/models/Referral';
 import ReverseSwap from '../db/models/ReverseSwap';
 import Swap from '../db/models/Swap';
 import ChainSwapRepository, {
   ChainSwapInfo,
 } from '../db/repositories/ChainSwapRepository';
 import ChannelCreationRepository from '../db/repositories/ChannelCreationRepository';
+import ExtraFeeRepository from '../db/repositories/ExtraFeeRepository';
 import PairRepository from '../db/repositories/PairRepository';
 import ReferralRepository from '../db/repositories/ReferralRepository';
 import ReverseRoutingHintRepository from '../db/repositories/ReverseRoutingHintRepository';
@@ -55,11 +61,7 @@ import ReverseSwapRepository from '../db/repositories/ReverseSwapRepository';
 import SwapRepository from '../db/repositories/SwapRepository';
 import { msatToSat } from '../lightning/ChannelUtils';
 import LightningErrors from '../lightning/Errors';
-import {
-  HopHint,
-  InvoiceFeature,
-  PaymentResponse,
-} from '../lightning/LightningClient';
+import { HopHint, InvoiceFeature } from '../lightning/LightningClient';
 import LndClient from '../lightning/LndClient';
 import ClnClient from '../lightning/cln/ClnClient';
 import NotificationClient from '../notifications/NotificationClient';
@@ -72,6 +74,7 @@ import {
   GetInfoResponse,
   LightningInfo,
 } from '../proto/boltzrpc_pb';
+import FeeProvider from '../rates/FeeProvider';
 import LockupTransactionTracker from '../rates/LockupTransactionTracker';
 import RateProvider from '../rates/RateProvider';
 import { PairTypeLegacy } from '../rates/providers/RateProviderLegacy';
@@ -121,6 +124,11 @@ type WebHookData = {
   url: string;
   hashSwapId?: boolean;
   status?: string[];
+};
+
+type ExtraFees = {
+  id: string;
+  percentage: number;
 };
 
 type SomePair =
@@ -459,6 +467,61 @@ class Service {
     );
 
     return endHeight;
+  };
+
+  public calculateTransactionFee = async (
+    symbol: string,
+    transactionId: string,
+  ): Promise<{
+    absolute: number;
+    gwei?: number;
+    satPerVbyte?: number;
+  }> => {
+    const currency = getCurrency(this.currencies, symbol);
+    switch (currency.type) {
+      case CurrencyType.BitcoinLike: {
+        const tx = parseTransaction(
+          currency.type,
+          await currency.chainClient!.getRawTransaction(transactionId),
+        );
+        const absolute = await calculateUtxoTransactionFee(
+          currency.chainClient!,
+          tx as Transaction,
+        );
+
+        return {
+          absolute,
+          satPerVbyte: absolute / tx.virtualSize(),
+        };
+      }
+
+      case CurrencyType.Liquid: {
+        const wallet = this.walletManager.wallets.get(symbol)! as WalletLiquid;
+        const tx = parseTransaction(
+          currency.type,
+          await currency.chainClient!.getRawTransaction(transactionId),
+        ) as LiquidTransaction;
+        const absolute = calculateLiquidTransactionFee(tx);
+
+        return {
+          absolute,
+          satPerVbyte: absolute / tx.virtualSize(wallet.supportsDiscountCT),
+        };
+      }
+
+      case CurrencyType.Ether:
+      case CurrencyType.ERC20: {
+        const receipt =
+          await currency.provider!.getTransactionReceipt(transactionId);
+        if (receipt === null) {
+          throw Errors.NO_TRANSACTION(transactionId);
+        }
+        return {
+          gwei: Number(receipt.gasPrice) / Number(gweiDecimals),
+          absolute: calculateEthereumTransactionFeeWithReceipt(receipt),
+        };
+      }
+    }
   };
 
   /**
@@ -1202,6 +1265,9 @@ class Service {
       swap.orderSide,
       SwapType.Submarine,
       PercentageFeeType.Calculation,
+      swap.referral !== undefined && swap.referral !== null
+        ? await ReferralRepository.getReferralById(swap.referral)
+        : null,
     );
     const baseFee = this.rateProvider.feeProvider.getBaseFee(
       onchainCurrency,
@@ -1217,13 +1283,14 @@ class Service {
       percentageFee,
     );
 
-    this.verifyAmount(
+    await this.verifyAmount(
       swap.pair,
       rate,
       invoiceAmount,
       swap.orderSide,
       swap.version,
       SwapType.Submarine,
+      swap.referral,
     );
 
     return {
@@ -1238,6 +1305,7 @@ class Service {
     id: string,
     invoice: string,
     pairHash?: string,
+    extraFees?: ExtraFees,
   ) => {
     const swap = await SwapRepository.getSwap({
       id,
@@ -1265,9 +1333,9 @@ class Service {
     ]);
     swap.invoiceAmount = msatToSat(decodedInvoice.amountMsat);
 
-    const lightningClient = this.nodeSwitch.getSwapNode(
+    const lightningClient = await this.nodeSwitch.getSwapNode(
       this.currencies.get(lightningCurrency)!,
-      decodedInvoice.type,
+      decodedInvoice,
       swap,
     );
 
@@ -1285,7 +1353,7 @@ class Service {
       throw SwapErrors.NO_ROUTE_FOUND();
     }
 
-    return this.setSwapInvoice(swap, invoice, true, pairHash);
+    return this.setSwapInvoice(swap, invoice, true, pairHash, extraFees);
   };
 
   /**
@@ -1296,6 +1364,7 @@ class Service {
     invoice: string,
     canBeRouted: boolean,
     pairHash?: string,
+    extraFees?: ExtraFees,
   ): Promise<{
     bip21: string;
     expectedAmount: number;
@@ -1304,12 +1373,14 @@ class Service {
     const {
       base,
       quote,
+      referral,
       rate: pairRate,
-    } = this.getPair(
+    } = await this.getPair(
       swap.pair,
       swap.orderSide,
       swap.version,
       SwapType.Submarine,
+      swap.referral,
     );
 
     if (pairHash !== undefined) {
@@ -1337,13 +1408,14 @@ class Service {
 
     swap.invoiceAmount = msatToSat(decodedInvoice.amountMsat);
 
-    const { destination, features } = await this.nodeSwitch
-      .getSwapNode(
-        getCurrency(this.currencies, lightningCurrency)!,
-        decodedInvoice.type,
-        swap,
-      )
-      .decodeInvoice(invoice);
+    const lightningClient = await this.nodeSwitch.getSwapNode(
+      getCurrency(this.currencies, lightningCurrency)!,
+      decodedInvoice,
+      swap,
+    );
+
+    const { destination, features } =
+      await lightningClient.decodeInvoice(invoice);
 
     if (this.nodeInfo.isOurNode(destination)) {
       throw Errors.DESTINATION_BOLTZ_NODE();
@@ -1359,27 +1431,34 @@ class Service {
     }
 
     const rate = swap.rate || getRate(pairRate, swap.orderSide, false);
-    this.verifyAmount(
+    await this.verifyAmount(
       swap.pair,
       rate,
       swap.invoiceAmount,
       swap.orderSide,
       swap.version,
       SwapType.Submarine,
+      swap.referral,
     );
 
-    const { baseFee, percentageFee } = this.rateProvider.feeProvider.getFees(
-      swap.pair,
-      swap.version,
-      rate,
-      swap.orderSide,
-      swap.invoiceAmount,
-      SwapType.Submarine,
-      BaseFeeType.NormalClaim,
-    );
+    const { baseFee, percentageFee, extraFee } =
+      this.rateProvider.feeProvider.getFees(
+        swap.pair,
+        swap.version,
+        rate,
+        swap.orderSide,
+        swap.invoiceAmount,
+        SwapType.Submarine,
+        BaseFeeType.NormalClaim,
+        referral,
+        extraFees,
+      );
 
     const expectedAmount =
-      Math.floor(swap.invoiceAmount * rate) + baseFee + percentageFee;
+      Math.floor(swap.invoiceAmount * rate) +
+      baseFee +
+      percentageFee +
+      (extraFee || 0);
 
     if (swap.onchainAmount && expectedAmount > swap.onchainAmount) {
       const maxInvoiceAmount = this.calculateInvoiceAmount(
@@ -1392,6 +1471,7 @@ class Service {
           swap.orderSide,
           SwapType.Submarine,
           PercentageFeeType.Calculation,
+          referral,
         ),
       );
 
@@ -1431,6 +1511,8 @@ class Service {
       this.eventHandler.emitSwapInvoiceSet,
     );
 
+    await this.createExtraFees(swap.id, extraFee, extraFees);
+
     return {
       expectedAmount,
       acceptZeroConf,
@@ -1458,6 +1540,7 @@ class Service {
     channel?: ChannelCreationInfo,
     version: SwapVersion = SwapVersion.Legacy,
     webHook?: WebHookData,
+    extraFees?: ExtraFees,
   ): Promise<{
     id: string;
     bip21: string;
@@ -1516,6 +1599,7 @@ class Service {
           invoice,
           createdSwap.canBeRouted,
           pairHash,
+          extraFees,
         );
 
       return {
@@ -1587,6 +1671,7 @@ class Service {
     descriptionHash?: Buffer;
 
     webHook?: WebHookData;
+    extraFees?: ExtraFees;
 
     invoiceExpiry?: number;
   }): Promise<{
@@ -1620,15 +1705,21 @@ class Service {
     await this.checkSwapWithPreimageExists(args.preimageHash);
 
     const side = this.getOrderSide(args.orderSide);
+    const referralId = await this.getReferralId(
+      args.referralId,
+      args.routingNode,
+    );
     const {
       base,
       quote,
+      referral,
       rate: pairRate,
-    } = this.getPair(
+    } = await this.getPair(
       args.pairId,
       side,
       args.version,
       SwapType.ReverseSubmarine,
+      referralId,
     );
 
     if (args.pairHash !== undefined) {
@@ -1696,6 +1787,7 @@ class Service {
       side,
       SwapType.ReverseSubmarine,
       PercentageFeeType.Calculation,
+      referral,
     );
     const baseFee = this.rateProvider.feeProvider.getBaseFee(
       sendingCurrency.symbol,
@@ -1740,13 +1832,30 @@ class Service {
       throw Errors.NO_AMOUNT_SPECIFIED();
     }
 
-    this.verifyAmount(
+    let extraFee: number | undefined = undefined;
+
+    if (args.extraFees !== undefined) {
+      extraFee = FeeProvider.calculateExtraFee(
+        args.extraFees.percentage,
+        holdInvoiceAmount,
+        rate,
+      );
+
+      if (invoiceAmountDefined) {
+        onchainAmount = Math.floor(onchainAmount - extraFee);
+      } else {
+        holdInvoiceAmount = Math.ceil(holdInvoiceAmount + extraFee);
+      }
+    }
+
+    await this.verifyAmount(
       args.pairId,
       rate,
       holdInvoiceAmount,
       side,
       args.version,
       SwapType.ReverseSubmarine,
+      referralId,
     );
     await this.balanceCheck.checkBalance(sendingCurrency.symbol, onchainAmount);
 
@@ -1810,10 +1919,6 @@ class Service {
       throw Errors.ONCHAIN_AMOUNT_TOO_LOW();
     }
 
-    const referralId = await this.getReferralId(
-      args.referralId,
-      args.routingNode,
-    );
     const {
       id,
       invoice,
@@ -1860,6 +1965,8 @@ class Service {
       });
     }
 
+    await this.createExtraFees(id, extraFee, args.extraFees);
+
     const response: any = {
       id,
       invoice,
@@ -1904,15 +2011,24 @@ class Service {
     serverLockAmount?: number;
 
     webHook?: WebHookData;
+    extraFees?: ExtraFees;
   }) => {
     await this.checkSwapWithPreimageExists(args.preimageHash);
 
     const side = this.getOrderSide(args.orderSide);
+    const referralId = await this.getReferralId(args.referralId);
     const {
       base,
       quote,
+      referral,
       rate: pairRate,
-    } = this.getPair(args.pairId, side, SwapVersion.Taproot, SwapType.Chain);
+    } = await this.getPair(
+      args.pairId,
+      side,
+      SwapVersion.Taproot,
+      SwapType.Chain,
+      referralId,
+    );
 
     if (base === quote) {
       throw Errors.PAIR_NOT_FOUND(args.pairId);
@@ -1977,7 +2093,7 @@ class Service {
     const receivingTimeoutBlockDelta = TimeoutDeltaProvider.convertBlocks(
       sending,
       receiving,
-      sendingTimeoutBlockDelta * 1.25,
+      sendingTimeoutBlockDelta * 1.5,
     );
 
     const rate = getRate(pairRate, side, true);
@@ -1985,11 +2101,13 @@ class Service {
     const { feePercent, baseFee } = this.swapManager.renegotiator.getFees(
       args.pairId,
       side,
+      referral,
     );
     let percentageFee: number;
 
     const isZeroAmount =
       args.userLockAmount === undefined && args.serverLockAmount === undefined;
+    let userLockAmountDefined: boolean = false;
 
     if (
       args.userLockAmount !== undefined &&
@@ -1997,6 +2115,8 @@ class Service {
     ) {
       throw Errors.USER_AND_SERVER_AMOUNT_SPECIFIED();
     } else if (args.userLockAmount !== undefined) {
+      userLockAmountDefined = true;
+
       this.checkWholeNumber(args.userLockAmount);
 
       const calcRes = this.swapManager.renegotiator.calculateServerLockAmount(
@@ -2009,6 +2129,8 @@ class Service {
       percentageFee = calcRes.percentageFee;
       args.serverLockAmount = calcRes.serverLockAmount;
     } else if (args.serverLockAmount !== undefined) {
+      userLockAmountDefined = false;
+
       this.checkWholeNumber(args.serverLockAmount);
 
       args.userLockAmount = (args.serverLockAmount + baseFee) / rate;
@@ -2024,14 +2146,31 @@ class Service {
       throw Errors.NO_AMOUNT_SPECIFIED();
     }
 
+    let extraFee: number | undefined = undefined;
+
     if (!isZeroAmount) {
-      this.verifyAmount(
+      if (args.extraFees !== undefined) {
+        extraFee = FeeProvider.calculateExtraFee(
+          args.extraFees.percentage,
+          args.userLockAmount,
+          rate,
+        );
+
+        if (userLockAmountDefined) {
+          args.serverLockAmount = Math.floor(args.serverLockAmount - extraFee);
+        } else {
+          args.userLockAmount = Math.ceil(args.userLockAmount + extraFee);
+        }
+      }
+
+      await this.verifyAmount(
         args.pairId,
         rate,
         args.userLockAmount,
         side,
         SwapVersion.Taproot,
         SwapType.Chain,
+        referralId,
       );
       if (args.serverLockAmount < 1) {
         throw Errors.ONCHAIN_AMOUNT_TOO_LOW();
@@ -2043,7 +2182,6 @@ class Service {
       );
     }
 
-    const referralId = await this.getReferralId(args.referralId);
     const res = await this.swapManager.createChainSwap({
       referralId,
       percentageFee,
@@ -2072,6 +2210,8 @@ class Service {
       });
     }
 
+    await this.createExtraFees(res.id, extraFee, args.extraFees);
+
     return {
       referralId,
       id: res.id,
@@ -2086,23 +2226,6 @@ class Service {
         ),
       },
     };
-  };
-
-  /**
-   * Pays a lightning invoice
-   */
-  public payInvoice = async (
-    symbol: string,
-    invoice: string,
-  ): Promise<PaymentResponse> => {
-    const currency = getCurrency(this.currencies, symbol);
-    const lightningClient = currency.lndClient || currency.clnClient;
-
-    if (lightningClient === undefined) {
-      throw SwapErrors.NO_LIGHTNING_SUPPORT(symbol);
-    }
-
-    return lightningClient.sendPayment(invoice);
   };
 
   /**
@@ -2158,13 +2281,14 @@ class Service {
   /**
    * Verifies that the requested amount is neither above the maximal nor beneath the minimal
    */
-  private verifyAmount = (
+  private verifyAmount = async (
     pairId: string,
     rate: number,
     amount: number,
     orderSide: OrderSide,
     version: SwapVersion,
     type: SwapType,
+    referralId?: string,
   ) => {
     if (
       (type === SwapType.Submarine && orderSide === OrderSide.BUY) ||
@@ -2173,7 +2297,13 @@ class Service {
       amount = Math.floor(amount * rate);
     }
 
-    const { limits } = this.getPair(pairId, orderSide, version, type);
+    const { limits } = await this.getPair(
+      pairId,
+      orderSide,
+      version,
+      type,
+      referralId,
+    );
 
     if (limits) {
       if (Math.floor(amount) > limits.maximal)
@@ -2224,6 +2354,24 @@ class Service {
     }
   };
 
+  private createExtraFees = async (
+    id: string,
+    fee?: number,
+    extraFees?: ExtraFees,
+  ) => {
+    if (extraFees !== undefined) {
+      this.logger.debug(
+        `Adding extra fee for swap ${id}: ${fee || '0 amount swap'} (${extraFees.percentage}%)`,
+      );
+      await ExtraFeeRepository.create({
+        fee,
+        swapId: id,
+        id: extraFees.id,
+        percentage: extraFees.percentage,
+      });
+    }
+  };
+
   /**
    * Calculates the amount of an invoice for a Submarine Swap
    */
@@ -2241,15 +2389,19 @@ class Service {
     return Math.floor(((onchainAmount - baseFee) * rate) / (1 + percentageFee));
   };
 
-  private getPair = (
+  private getPair = async (
     pairId: string,
     orderSide: OrderSide,
     version: SwapVersion,
     type: SwapType,
-  ): { base: string; quote: string } & SomePair => {
+    referralId?: string,
+  ): Promise<
+    { base: string; quote: string; referral: Referral | null } & SomePair
+  > => {
     const { base, quote } = splitPairId(pairId);
 
     let pair: SomePair | undefined;
+    let referral: Referral | null = null;
 
     switch (version) {
       case SwapVersion.Taproot: {
@@ -2260,18 +2412,23 @@ class Service {
           orderSide,
         );
 
+        referral =
+          referralId !== undefined && referralId !== null
+            ? await ReferralRepository.getReferralById(referralId)
+            : null;
+
         let pairMap: Map<string, Map<string, SomePair>> | undefined;
         switch (type) {
           case SwapType.Submarine:
-            pairMap = provider.submarinePairs;
+            pairMap = provider.getSubmarinePairs(referral);
             break;
 
           case SwapType.ReverseSubmarine:
-            pairMap = provider.reversePairs;
+            pairMap = provider.getReversePairs(referral);
             break;
 
           case SwapType.Chain:
-            pairMap = provider.chainPairs;
+            pairMap = provider.getChainPairs(referral);
             break;
         }
 
@@ -2292,6 +2449,7 @@ class Service {
     return {
       base,
       quote,
+      referral,
       ...pair,
     };
   };
@@ -2318,4 +2476,4 @@ class Service {
 export const cancelledViaCliFailureReason = 'payment has been cancelled';
 
 export default Service;
-export { WebHookData, Contracts, NetworkContracts };
+export { WebHookData, Contracts, NetworkContracts, ExtraFees };

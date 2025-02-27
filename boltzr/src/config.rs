@@ -37,7 +37,6 @@ pub struct Config {
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct GlobalConfig {
-    #[cfg(any(feature = "loki", feature = "otel"))]
     #[serde(rename = "network")]
     pub network: Option<String>,
 
@@ -49,8 +48,21 @@ pub struct GlobalConfig {
     #[serde(rename = "otlpEndpoint")]
     pub otlp_endpoint: Option<String>,
 
+    #[cfg(feature = "otel")]
+    #[serde(rename = "profilingEndpoint")]
+    pub profiling_endpoint: Option<String>,
+
+    #[serde(rename = "mnemonicpath")]
+    pub mnemonic_path: Option<String>,
+
     #[serde(rename = "mnemonicpathEvm")]
     pub mnemonic_path_evm: Option<String>,
+
+    #[serde(rename = "marking")]
+    pub marking: Option<crate::service::MarkingsConfig>,
+
+    pub cache: Option<crate::cache::CacheConfig>,
+    pub historical: Option<crate::service::HistoricalConfig>,
 
     pub backup: Option<crate::backup::Config>,
     pub notification: Option<crate::notifications::Config>,
@@ -68,16 +80,20 @@ pub fn parse_config(path: &str) -> Result<GlobalConfig, Box<dyn Error>> {
     let mut config = toml::from_str::<GlobalConfig>(fs::read_to_string(path)?.as_ref())?;
     trace!("Read config: {:#}", serde_json::to_string_pretty(&config)?);
 
+    let default_mnemonic_path = Path::new(path)
+        .parent()
+        .unwrap()
+        .join("seed.dat")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    if config.mnemonic_path.is_none() {
+        config.mnemonic_path = Some(default_mnemonic_path.clone());
+    }
+
     if config.mnemonic_path_evm.is_none() {
-        config.mnemonic_path_evm = Some(
-            Path::new(path)
-                .parent()
-                .unwrap()
-                .join("seed.dat")
-                .to_str()
-                .unwrap()
-                .to_string(),
-        );
+        config.mnemonic_path_evm = Some(default_mnemonic_path);
     }
 
     let data_dir = config.clone().sidecar.data_dir.unwrap_or(
@@ -125,7 +141,7 @@ pub fn parse_config(path: &str) -> Result<GlobalConfig, Box<dyn Error>> {
 
 #[cfg(test)]
 mod test_config {
-    use crate::config::{parse_config, Config};
+    use crate::config::{Config, parse_config};
     use std::fs;
     use std::path::Path;
 
@@ -156,11 +172,13 @@ irrelevant = "values"
         )
         .unwrap();
 
-        assert!(parse_config(config_file_path.to_str().unwrap())
-            .err()
-            .unwrap()
-            .to_string()
-            .starts_with("TOML parse error"),);
+        assert!(
+            parse_config(config_file_path.to_str().unwrap())
+                .err()
+                .unwrap()
+                .to_string()
+                .starts_with("TOML parse error"),
+        );
 
         fs::remove_dir_all(path).unwrap();
     }

@@ -9,6 +9,7 @@ import ChainSwapData from './models/ChainSwapData';
 import ChainTip from './models/ChainTip';
 import ChannelCreation from './models/ChannelCreation';
 import DatabaseVersion from './models/DatabaseVersion';
+import ExtraFee from './models/ExtraFee';
 import KeyProvider from './models/KeyProvider';
 import LightningPayment from './models/LightningPayment';
 import MarkedSwap from './models/MarkedSwap';
@@ -21,6 +22,7 @@ import ReverseRoutingHint from './models/ReverseRoutingHint';
 import ReverseSwap from './models/ReverseSwap';
 import Swap from './models/Swap';
 import TransactionLabel from './models/TransactionLabel';
+import TransactionLabelRepository from './repositories/TransactionLabelRepository';
 
 // To make sure that PostgreSQL types are parsed correctly
 types.setTypeParser(types.builtins.INT8, parseInt);
@@ -95,6 +97,7 @@ class Database {
       Pair.sync(),
       ChainTip.sync(),
       Referral.sync(),
+      ExtraFee.sync(),
       KeyProvider.sync(),
       Rebroadcast.sync(),
       DatabaseVersion.sync(),
@@ -129,6 +132,7 @@ class Database {
 
   private loadModels = () => {
     Pair.load(Database.sequelize);
+    ExtraFee.load(Database.sequelize);
     Referral.load(Database.sequelize);
     Swap.load(Database.sequelize);
     TransactionLabel.load(Database.sequelize);
@@ -145,6 +149,8 @@ class Database {
     PendingLockupTransaction.load(Database.sequelize);
     PendingEthereumTransaction.load(Database.sequelize);
     Rebroadcast.load(Database.sequelize);
+
+    TransactionLabelRepository.setLogger(this.logger);
   };
 }
 

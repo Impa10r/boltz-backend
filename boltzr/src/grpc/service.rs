@@ -5,19 +5,21 @@ use crate::evm::RefundSigner;
 use crate::grpc::service::boltzr::boltz_r_server::BoltzR;
 use crate::grpc::service::boltzr::scan_mempool_response::Transactions;
 use crate::grpc::service::boltzr::sign_evm_refund_request::Contract;
+use crate::grpc::service::boltzr::swap_update::{ChannelInfo, FailureDetails, TransactionInfo};
 use crate::grpc::service::boltzr::{
-    bolt11_invoice, bolt12_invoice, decode_invoice_or_offer_response, Bolt11Invoice, Bolt12Invoice,
-    Bolt12Offer, CreateWebHookRequest, CreateWebHookResponse, DecodeInvoiceOrOfferRequest,
-    DecodeInvoiceOrOfferResponse, Feature, FetchInvoiceRequest, FetchInvoiceResponse,
-    GetInfoRequest, GetInfoResponse, GetMessagesRequest, GetMessagesResponse, LogLevel,
-    ScanMempoolRequest, ScanMempoolResponse, SendMessageRequest, SendMessageResponse,
-    SendWebHookRequest, SendWebHookResponse, SetLogLevelRequest, SetLogLevelResponse,
-    SignEvmRefundRequest, SignEvmRefundResponse, StartWebHookRetriesRequest,
-    StartWebHookRetriesResponse, SwapUpdateRequest, SwapUpdateResponse,
+    Bolt11Invoice, Bolt12Invoice, Bolt12Offer, CreateWebHookRequest, CreateWebHookResponse,
+    DecodeInvoiceOrOfferRequest, DecodeInvoiceOrOfferResponse, Feature, GetInfoRequest,
+    GetInfoResponse, GetMessagesRequest, GetMessagesResponse, IsMarkedRequest, IsMarkedResponse,
+    LogLevel, ScanMempoolRequest, ScanMempoolResponse, SendMessageRequest, SendMessageResponse,
+    SendSwapUpdateRequest, SendSwapUpdateResponse, SendWebHookRequest, SendWebHookResponse,
+    SetLogLevelRequest, SetLogLevelResponse, SignEvmRefundRequest, SignEvmRefundResponse,
+    StartWebHookRetriesRequest, StartWebHookRetriesResponse, SwapUpdate, SwapUpdateRequest,
+    SwapUpdateResponse, bolt11_invoice, bolt12_invoice, decode_invoice_or_offer_response,
 };
 use crate::grpc::status_fetcher::StatusFetcher;
 use crate::lightning::invoice::Invoice;
 use crate::notifications::NotificationClient;
+use crate::service::Service;
 use crate::swap::manager::SwapManager;
 use crate::tracing_setup::ReloadHandler;
 use crate::webhook::caller::Caller;
@@ -26,15 +28,16 @@ use futures::StreamExt;
 use lightning::blinded_path::IntroductionNode;
 use lightning::offers::offer::Amount;
 use lightning::util::ser::Writeable;
-use lightning_invoice::Bolt11InvoiceDescription;
+use lightning_invoice::Bolt11InvoiceDescriptionRef;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
-use tokio::sync::{mpsc, Mutex};
-use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::{Mutex, mpsc};
 use tonic::codegen::tokio_stream::Stream;
+use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status, Streaming};
 use tracing::{debug, error, instrument, trace};
 
@@ -46,6 +49,7 @@ pub struct BoltzService<M, T> {
     log_reload_handler: ReloadHandler,
     web_hook_retry_handle: Arc<Mutex<Cell<Option<tokio::task::JoinHandle<()>>>>>,
 
+    service: Arc<Service>,
     manager: Arc<M>,
 
     web_hook_helper: Arc<Box<dyn WebHookHelper + Sync + Send>>,
@@ -62,6 +66,7 @@ impl<M, T> BoltzService<M, T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         log_reload_handler: ReloadHandler,
+        service: Arc<Service>,
         manager: Arc<M>,
         status_fetcher: StatusFetcher,
         swap_status_update_tx: tokio::sync::broadcast::Sender<Vec<SwapStatus>>,
@@ -72,6 +77,7 @@ impl<M, T> BoltzService<M, T> {
     ) -> Self {
         BoltzService {
             manager,
+            service,
             refund_signer,
             status_fetcher,
             web_hook_caller,
@@ -251,6 +257,54 @@ where
                             break;
                         }
                     }
+                }
+            }
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    type SendSwapUpdateStream =
+        Pin<Box<dyn Stream<Item = Result<SendSwapUpdateResponse, Status>> + Send>>;
+
+    #[instrument(name = "grpc::send_swap_update", skip_all)]
+    async fn send_swap_update(
+        &self,
+        request: Request<SendSwapUpdateRequest>,
+    ) -> Result<Response<Self::SendSwapUpdateStream>, Status> {
+        extract_parent_context(&request);
+
+        let mut update_rx = self.manager.listen_to_updates();
+
+        let (tx, rx) = mpsc::channel(128);
+        tokio::spawn(async move {
+            while let Ok(update) = update_rx.recv().await {
+                if let Err(err) = tx
+                    .send(Ok(SendSwapUpdateResponse {
+                        update: Some(SwapUpdate {
+                            id: update.id,
+                            status: update.status,
+                            failure_reason: update.failure_reason,
+                            zero_conf_rejected: update.zero_conf_rejected,
+                            channel_info: update.channel_info.map(|info| ChannelInfo {
+                                funding_transaction_id: info.funding_transaction_id,
+                                funding_transaction_vout: info.funding_transaction_vout,
+                            }),
+                            failure_details: update.failure_details.map(|dt| FailureDetails {
+                                actual: dt.actual,
+                                expected: dt.expected,
+                            }),
+                            transaction_info: update.transaction.map(|tx| TransactionInfo {
+                                id: tx.id,
+                                hex: tx.hex,
+                                eta: tx.eta,
+                            }),
+                        }),
+                    }))
+                    .await
+                {
+                    debug!("send_swap_update stream closed: {}", err);
+                    break;
                 }
             }
         });
@@ -474,14 +528,14 @@ where
                             created_at: match invoice.timestamp().duration_since(UNIX_EPOCH) {
                                 Ok(delta) => delta.as_secs(),
                                 Err(err) => {
-                                    return Err(Status::new(Code::Internal, err.to_string()))
+                                    return Err(Status::new(Code::Internal, err.to_string()));
                                 }
                             },
                             description: Some(match invoice.description() {
-                                Bolt11InvoiceDescription::Direct(memo) => {
+                                Bolt11InvoiceDescriptionRef::Direct(memo) => {
                                     bolt11_invoice::Description::Memo(memo.to_string())
                                 }
-                                Bolt11InvoiceDescription::Hash(hash) => {
+                                Bolt11InvoiceDescriptionRef::Hash(hash) => {
                                     bolt11_invoice::Description::DescriptionHash(
                                         hash.0[..].to_vec(),
                                     )
@@ -524,7 +578,9 @@ where
                     decoded: Some(decode_invoice_or_offer_response::Decoded::Offer(
                         Bolt12Offer {
                             id: offer.id().0[..].to_vec(),
-                            signing_pubkey: offer.signing_pubkey().map(|pubkey| pubkey.encode()),
+                            signing_pubkey: offer
+                                .issuer_signing_pubkey()
+                                .map(|pubkey| pubkey.encode()),
                             description: offer
                                 .description()
                                 .map(|description| description.to_string()),
@@ -535,7 +591,7 @@ where
                                         return Err(Status::new(
                                             Code::InvalidArgument,
                                             "non Bitcoin currencies are not supported",
-                                        ))
+                                        ));
                                     }
                                 },
                                 None => None,
@@ -580,24 +636,21 @@ where
         }
     }
 
-    #[instrument(name = "grpc::fetch_invoice", skip_all)]
-    async fn fetch_invoice(
+    #[instrument(name = "grpc::is_marked", skip_all)]
+    async fn is_marked(
         &self,
-        request: Request<FetchInvoiceRequest>,
-    ) -> Result<Response<FetchInvoiceResponse>, Status> {
+        request: Request<IsMarkedRequest>,
+    ) -> Result<Response<IsMarkedResponse>, Status> {
         extract_parent_context(&request);
 
-        let params = request.into_inner();
-
-        match self.manager.get_currency(&params.currency) {
-            Some(currency) => match currency.cln.clone() {
-                Some(mut cln) => match cln.fetch_invoice(params.offer, params.amount_msat).await {
-                    Ok(invoice) => Ok(Response::new(FetchInvoiceResponse { invoice })),
-                    Err(err) => Err(Status::new(Code::Internal, err.to_string())),
-                },
-                None => Err(Status::new(Code::NotFound, "no BOLT12 support")),
-            },
-            None => Err(Status::new(Code::NotFound, "currency not found")),
+        match request.into_inner().ip.parse::<IpAddr>() {
+            Ok(ip) => Ok(Response::new(IsMarkedResponse {
+                is_marked: self.service.country_codes.is_relevant(&ip),
+            })),
+            Err(err) => Err(Status::new(
+                Code::InvalidArgument,
+                format!("could not parse IP: {}", err),
+            )),
         }
     }
 
@@ -653,12 +706,16 @@ fn extract_parent_context<T>(request: &Request<T>) {
 #[cfg(test)]
 mod test {
     use crate::api::ws;
-    use crate::chain::utils::Transaction;
-    use crate::currencies::Currency;
-    use crate::db::helpers::web_hook::WebHookHelper;
+    use crate::cache::Redis;
     use crate::db::helpers::QueryResponse;
-    use crate::db::models::{WebHook, WebHookState};
+    use crate::db::helpers::chain_swap::{
+        ChainSwapCondition, ChainSwapDataNullableCondition, ChainSwapHelper,
+    };
+    use crate::db::helpers::swap::{SwapCondition, SwapHelper, SwapNullableCondition};
+    use crate::db::helpers::web_hook::WebHookHelper;
+    use crate::db::models::{ChainSwapInfo, Swap, WebHook, WebHookState};
     use crate::evm::RefundSigner;
+    use crate::grpc::service::BoltzService;
     use crate::grpc::service::boltzr::boltz_r_server::BoltzR;
     use crate::grpc::service::boltzr::sign_evm_refund_request::Contract;
     use crate::grpc::service::boltzr::{
@@ -666,13 +723,14 @@ mod test {
         SendWebHookRequest, SendWebHookResponse, SignEvmRefundRequest, StartWebHookRetriesRequest,
         StartWebHookRetriesResponse,
     };
-    use crate::grpc::service::BoltzService;
     use crate::grpc::status_fetcher::StatusFetcher;
     use crate::notifications::commands::Commands;
-    use crate::swap::manager::SwapManager;
+    use crate::service::Service;
+    use crate::swap::SwapUpdate;
+    use crate::swap::manager::test::MockManager;
     use crate::tracing_setup::ReloadHandler;
     use crate::webhook::caller::{Caller, Config};
-    use alloy::primitives::{Address, FixedBytes, Signature, U256};
+    use alloy::primitives::{Address, FixedBytes, PrimitiveSignature, U256};
     use anyhow::anyhow;
     use async_trait::async_trait;
     use mockall::mock;
@@ -682,6 +740,44 @@ mod test {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
     use tonic::{Code, Request};
+
+    mock! {
+        SwapHelper {}
+
+        impl Clone for SwapHelper {
+            fn clone(&self) -> Self;
+        }
+
+        impl SwapHelper for SwapHelper {
+            fn get_all(&self, condition: SwapCondition) -> QueryResponse<Vec<Swap>>;
+            fn get_all_nullable(&self, condition: SwapNullableCondition) -> QueryResponse<Vec<Swap>>;
+            fn update_status(
+                &self,
+                id: &str,
+                status: SwapUpdate,
+                failure_reason: Option<String>,
+            ) -> QueryResponse<usize>;
+        }
+    }
+
+    mock! {
+        ChainSwapHelper {}
+
+        impl Clone for ChainSwapHelper {
+            fn clone(&self) -> Self;
+        }
+
+        impl ChainSwapHelper for ChainSwapHelper {
+            fn get_all(
+                &self,
+                condition: ChainSwapCondition,
+            ) -> QueryResponse<Vec<ChainSwapInfo>>;
+            fn get_by_data_nullable(
+                &self,
+                condition: ChainSwapDataNullableCondition,
+            ) -> QueryResponse<Vec<ChainSwapInfo>>;
+        }
+    }
 
     mock! {
         WebHookHelper {}
@@ -713,24 +809,7 @@ mod test {
                 amount: U256,
                 token_address: Option<Address>,
                 timeout: u64,
-            ) -> anyhow::Result<Signature>;
-        }
-    }
-
-    mock! {
-        Manager {}
-
-        impl Clone for Manager {
-            fn clone(&self) -> Self;
-        }
-
-        #[async_trait]
-        impl SwapManager for Manager {
-            fn get_currency(&self, symbol: &str) -> Option<Currency>;
-            async fn scan_mempool(
-                &self,
-                symbols: Option<Vec<String>>,
-            ) -> anyhow::Result<HashMap<String, Vec<Transaction>>>;
+            ) -> anyhow::Result<PrimitiveSignature>;
         }
     }
 
@@ -751,13 +830,14 @@ mod test {
     #[tokio::test]
     async fn test_web_hook_retries() {
         let (cancel_token, svc) = make_service();
-        assert!(svc
-            .web_hook_retry_handle
-            .clone()
-            .lock()
-            .await
-            .get_mut()
-            .is_none());
+        assert!(
+            svc.web_hook_retry_handle
+                .clone()
+                .lock()
+                .await
+                .get_mut()
+                .is_none()
+        );
         assert_eq!(
             svc.start_web_hook_retries(Request::new(StartWebHookRetriesRequest {}))
                 .await
@@ -766,13 +846,14 @@ mod test {
             StartWebHookRetriesResponse {}
         );
 
-        assert!(svc
-            .web_hook_retry_handle
-            .clone()
-            .lock()
-            .await
-            .get_mut()
-            .is_some());
+        assert!(
+            svc.web_hook_retry_handle
+                .clone()
+                .lock()
+                .await
+                .get_mut()
+                .is_some()
+        );
         cancel_token.cancel();
         svc.web_hook_retry_handle
             .clone()
@@ -857,7 +938,7 @@ mod test {
         let (_, mut svc) = make_service();
 
         let mut preimage_hash = FixedBytes::<32>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let req = SignEvmRefundRequest {
             preimage_hash: preimage_hash.to_vec(),
@@ -871,9 +952,9 @@ mod test {
         let sig_str = "0xd247cfedc0c62ea93f4f3093a3b2941c329773f140ab0cdc04a641376982d34e0aa7152cb2dd9036fad543646a3fdc8b22c8d83e62e13684d61f630afdd08b0f1c";
         signer
             .expect_sign_cooperative_refund()
-            .returning(
-                |_, _, _, _, _| Ok(alloy::primitives::Signature::from_str(sig_str).unwrap()),
-            );
+            .returning(|_, _, _, _, _| {
+                Ok(alloy::primitives::PrimitiveSignature::from_str(sig_str).unwrap())
+            });
         svc.refund_signer = Some(Arc::new(signer));
 
         let res = svc
@@ -896,7 +977,7 @@ mod test {
         let (_, mut svc) = make_service();
 
         let mut preimage_hash = FixedBytes::<32>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let req = SignEvmRefundRequest {
             preimage_hash: preimage_hash.to_vec(),
@@ -942,7 +1023,7 @@ mod test {
         let (_, svc) = make_service();
 
         let mut preimage_hash = FixedBytes::<33>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let err = svc
             .sign_evm_refund(Request::new(SignEvmRefundRequest {
@@ -967,7 +1048,7 @@ mod test {
         let (_, svc) = make_service();
 
         let mut preimage_hash = FixedBytes::<32>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let err = svc
             .sign_evm_refund(Request::new(SignEvmRefundRequest {
@@ -992,7 +1073,7 @@ mod test {
         let (_, svc) = make_service();
 
         let mut preimage_hash = FixedBytes::<32>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let err = svc
             .sign_evm_refund(Request::new(SignEvmRefundRequest {
@@ -1024,6 +1105,14 @@ mod test {
             token.clone(),
             BoltzService::new(
                 ReloadHandler::new(),
+                Arc::new(Service::new::<Redis>(
+                    Arc::new(MockSwapHelper::new()),
+                    Arc::new(MockChainSwapHelper::new()),
+                    Arc::new(HashMap::new()),
+                    None,
+                    None,
+                    None,
+                )),
                 Arc::new(make_mock_manager()),
                 StatusFetcher::new(),
                 status_tx,

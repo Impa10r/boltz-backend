@@ -224,7 +224,12 @@ class TimeoutDeltaProvider {
             invoice,
             referralId,
           )
-        : [chainDeltas.swapMinimal, true];
+        : [
+            version === SwapVersion.Taproot
+              ? chainDeltas.swapTaproot
+              : chainDeltas.swapMinimal,
+            true,
+          ];
     }
   };
 
@@ -285,12 +290,11 @@ class TimeoutDeltaProvider {
     const decodedInvoice = await this.sidecar.decodeInvoiceOrOffer(invoice);
     const amountSat = msatToSat(decodedInvoice.amountMsat);
 
-    const lightningClient = this.nodeSwitch.getSwapNode(
+    const lightningClient = await this.nodeSwitch.getSwapNode(
       currency,
-      decodedInvoice.type,
+      decodedInvoice,
       {
         referral: referralId,
-        invoiceAmount: amountSat,
       },
     );
 

@@ -1,7 +1,13 @@
 import { ERC20Swap } from 'boltz-core/typechain/ERC20Swap';
 import { EtherSwap } from 'boltz-core/typechain/EtherSwap';
-import { ContractEventPayload, Transaction, TransactionResponse } from 'ethers';
+import {
+  ContractEventPayload,
+  Provider,
+  Transaction,
+  TransactionResponse,
+} from 'ethers';
 import Logger from '../../../Logger';
+import { formatError } from '../../../Utils';
 import TypedEventEmitter from '../../../consts/TypedEventEmitter';
 import { ERC20SwapValues, EtherSwapValues } from '../../../consts/Types';
 import { parseBuffer } from '../EthereumUtils';
@@ -47,10 +53,18 @@ type Events = {
 };
 
 class ContractEventHandler extends TypedEventEmitter<Events> {
+  // Check for missed events every 5 minutes
+  private static readonly missedEventsCheckInterval = 1_000 * 60 * 5;
+
   private version!: bigint;
 
   private etherSwap!: EtherSwap;
   private erc20Swap!: ERC20Swap;
+
+  private networkDetails!: NetworkDetails;
+
+  private rescanLastHeight = 0;
+  private rescanInterval: NodeJS.Timeout | undefined;
 
   constructor(private readonly logger: Logger) {
     super();
@@ -59,18 +73,38 @@ class ContractEventHandler extends TypedEventEmitter<Events> {
   public init = async (
     version: bigint,
     networkDetails: NetworkDetails,
+    provider: Provider,
     etherSwap: EtherSwap,
     erc20Swap: ERC20Swap,
   ): Promise<void> => {
     this.version = version;
     this.etherSwap = etherSwap;
     this.erc20Swap = erc20Swap;
+    this.networkDetails = networkDetails;
 
     this.logger.verbose(
-      `Starting ${networkDetails.name} contract event subscriptions`,
+      `Starting ${this.networkDetails.name} contracts v${version} event subscriptions`,
     );
 
     await this.subscribeContractEvents();
+
+    this.rescanLastHeight = await provider.getBlockNumber();
+    this.rescanInterval = setInterval(async () => {
+      try {
+        await this.checkMissedEvents(provider);
+      } catch (error) {
+        this.logger.error(
+          `Error checking for missed events of ${this.networkDetails.name} contracts v${version}: ${formatError(error)}`,
+        );
+      }
+    }, ContractEventHandler.missedEventsCheckInterval);
+  };
+
+  public destroy = () => {
+    if (this.rescanInterval) {
+      clearInterval(this.rescanInterval);
+      this.rescanInterval = undefined;
+    }
   };
 
   public rescan = async (startHeight: number): Promise<void> => {
@@ -233,6 +267,15 @@ class ContractEventHandler extends TypedEventEmitter<Events> {
         });
       },
     );
+  };
+
+  private checkMissedEvents = async (provider: Provider) => {
+    this.logger.debug(
+      `Checking for missed events of ${this.networkDetails.name} contracts v${this.version} from block ${this.rescanLastHeight}`,
+    );
+    const currentHeight = await provider.getBlockNumber();
+    await this.rescan(this.rescanLastHeight);
+    this.rescanLastHeight = currentHeight;
   };
 }
 

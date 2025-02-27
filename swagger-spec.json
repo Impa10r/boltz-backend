@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Boltz API",
-    "version": "3.8.1"
+    "version": "3.9.1"
   },
   "paths": {
     "/chain/fees": {
@@ -459,6 +459,129 @@
         }
       }
     },
+    "/lightning/{currency}/node/{node}": {
+      "get": {
+        "tags": [
+          "Lightning"
+        ],
+        "description": "Gets information about a lightning node",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "currency",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Currency of the lightning network to use"
+          },
+          {
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Public key of the node to get information for"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Information about the lightning node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LightningNode"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unprocessable acceptable request parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "When the node cannot be found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lightning/{currency}/channels/{node}": {
+      "get": {
+        "tags": [
+          "Lightning"
+        ],
+        "description": "Gets the channels of a lightning node",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "currency",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Currency of the lightning network to use"
+          },
+          {
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Public key of the node to get channels for"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Channels of the lightning node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LightningChannel"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unprocessable acceptable request parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "When the node cannot be found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/lightning/{currency}/bolt12/fetch": {
       "post": {
         "tags": [
@@ -520,8 +643,18 @@
               }
             }
           },
-          "400": {
-            "description": "Error that caused the broadcast of the transaction to fail",
+          "404": {
+            "description": "When the currency has no BOLT12 support",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "When no invoice could be fetched",
             "content": {
               "application/json": {
                 "schema": {
@@ -1465,7 +1598,7 @@
     },
     "/swap/reverse/{id}/claim": {
       "post": {
-        "description": "Requests a partial signature for a cooperative Reverse Swap claim transaction",
+        "description": "Requests a partial signature for a cooperative Reverse Swap claim transaction. To settle the invoice, but not claim the onchain HTLC (eg to create a batched claim in the future), only the preimage is required. If no transaction is provided, an empty object is returned as response.",
         "tags": [
           "Reverse"
         ],
@@ -2078,6 +2211,83 @@
           }
         }
       },
+      "LightningNode": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Public key of the node"
+          },
+          "alias": {
+            "type": "string",
+            "description": "Alias of the node"
+          },
+          "color": {
+            "type": "string",
+            "description": "Color code the node"
+          }
+        }
+      },
+      "LightningChannelInfo": {
+        "type": "object",
+        "required": [
+          "baseFeeMillisatoshi",
+          "feePpm",
+          "delay"
+        ],
+        "properties": {
+          "baseFeeMillisatoshi": {
+            "type": "number",
+            "description": "Base fee of the channel in millisatoshi"
+          },
+          "feePpm": {
+            "type": "number",
+            "description": "Parts per million fee of the channel"
+          },
+          "delay": {
+            "type": "number",
+            "description": "CLTV delay of the channel in blocks"
+          },
+          "htlcMinimumMillisatoshi": {
+            "type": "number",
+            "description": "Minimum allowed HTLC value in millisatoshi"
+          },
+          "htlcMaximumMillisatoshi": {
+            "type": "number",
+            "description": "Maximum allowed HTLC value in millisatoshi"
+          }
+        }
+      },
+      "LightningChannel": {
+        "type": "object",
+        "required": [
+          "source",
+          "shortChannelId"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/LightningNode"
+          },
+          "shortChannelId": {
+            "type": "string",
+            "description": "ID of the channel"
+          },
+          "capacity": {
+            "type": "number",
+            "description": "Capacity of the channel in satoshi"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Whether the channel can be used"
+          },
+          "info": {
+            "$ref": "#/components/schemas/LightningChannelInfo"
+          }
+        }
+      },
       "NodeInfo": {
         "type": "object",
         "required": [
@@ -2604,7 +2814,11 @@
           },
           "refundPublicKey": {
             "type": "string",
-            "description": "Public key of Boltz that will be used to refund the onchain HTLC"
+            "description": "Public key of Boltz that will be used to refund UTXO HTLCs"
+          },
+          "refundAddress": {
+            "type": "string",
+            "description": "Address that should be specified as refund address for EVM lockup transactions"
           },
           "timeoutBlockHeight": {
             "type": "number",
@@ -2648,10 +2862,7 @@
       "ReverseClaimRequest": {
         "type": "object",
         "required": [
-          "preimage",
-          "pubNonce",
-          "transaction",
-          "index"
+          "preimage"
         ],
         "properties": {
           "preimage": {
@@ -3075,7 +3286,7 @@
       "description": "Testnet"
     },
     {
-      "url": "http://localhost:9001/v2",
+      "url": "http://localhost:9006/v2",
       "description": "Regtest"
     }
   ]

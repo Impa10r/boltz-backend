@@ -18,8 +18,10 @@ import {
 jest.mock(
   '../../../../lib/db/repositories/PendingEthereumTransactionRepository',
   () => ({
+    getTotalSent: jest.fn().mockResolvedValue(0n),
     getTransactions: jest.fn().mockResolvedValue([]),
     addTransaction: jest.fn().mockResolvedValue(null),
+    getHighestNonce: jest.fn().mockResolvedValue(undefined),
   }),
 );
 jest.mock('../../../../lib/db/repositories/ChainTipRepository');
@@ -84,6 +86,7 @@ describe('EthereumManager', () => {
     await manager.destroy();
     await database.close();
     setup.provider.destroy();
+    manager.contractEventHandler.destroy();
   });
 
   test.each`

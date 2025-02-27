@@ -136,7 +136,10 @@ impl Caller {
     ) -> Result<CallResult, Box<dyn Error>> {
         if let Some(status_include) = &hook.status {
             if !status_include.contains(status) {
-                debug!("Not calling WebHook for swap {} because status update {} is not in include list", hook.id, status);
+                trace!(
+                    "Not calling WebHook for swap {} because status update {} is not in include list",
+                    hook.id, status
+                );
                 return Ok(CallResult::NotIncluded);
             }
         }
@@ -163,10 +166,7 @@ impl Caller {
             .send()
             .await
         {
-            Ok(res) => match res.error_for_status() {
-                Ok(_) => None,
-                Err(err) => Some(err),
-            },
+            Ok(res) => res.error_for_status().err(),
             Err(err) => Some(err),
         };
 
@@ -246,9 +246,7 @@ impl Caller {
         if let Some(status) = status {
             trace!(
                 "Retrying WebHook call for swap {} for status update {} to: {}",
-                hook.id,
-                status,
-                hook.url
+                hook.id, status, hook.url
             );
             let res = self.call_webhook(hook, &status.to_string()).await?;
 
@@ -323,10 +321,10 @@ impl Caller {
 
 #[cfg(test)]
 mod caller_test {
-    use crate::db::helpers::web_hook::WebHookHelper;
     use crate::db::helpers::QueryResponse;
+    use crate::db::helpers::web_hook::WebHookHelper;
     use crate::db::models::{WebHook, WebHookState};
-    use crate::webhook::caller::{CallResult, Caller, Config, UrlError, MAX_URL_LENGTH};
+    use crate::webhook::caller::{CallResult, Caller, Config, MAX_URL_LENGTH, UrlError};
     use crate::webhook::types::{WebHookCallData, WebHookCallParams, WebHookEvent};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;

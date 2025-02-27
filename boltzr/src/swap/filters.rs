@@ -4,7 +4,7 @@ use crate::db::helpers::chain_swap::ChainSwapHelper;
 use crate::db::helpers::reverse_swap::ReverseSwapHelper;
 use crate::db::helpers::swap::SwapHelper;
 use crate::db::models::{LightningSwap, SomeSwap};
-use crate::swap::status::{serialize_swap_updates, SwapUpdate};
+use crate::swap::status::{SwapUpdate, serialize_swap_updates};
 use crate::wallet::Wallet;
 use alloy::hex;
 use anyhow::Result;
@@ -41,6 +41,7 @@ fn get_swap_filters(
             SwapUpdate::InvoicePending,
             SwapUpdate::InvoiceFailedToPay,
             SwapUpdate::TransactionClaimed,
+            SwapUpdate::TransactionClaimPending,
         ])),
     ))?;
 
@@ -208,18 +209,23 @@ fn parse_transaction_id(id: &str) -> Result<Vec<u8>> {
 mod test {
     use crate::chain::utils::Outpoint;
     use crate::currencies::{Currencies, Currency};
-    use crate::db::helpers::chain_swap::{ChainSwapCondition, ChainSwapHelper};
-    use crate::db::helpers::reverse_swap::{ReverseSwapCondition, ReverseSwapHelper};
-    use crate::db::helpers::swap::{SwapCondition, SwapHelper};
     use crate::db::helpers::QueryResponse;
+    use crate::db::helpers::chain_swap::{
+        ChainSwapCondition, ChainSwapDataNullableCondition, ChainSwapHelper,
+    };
+    use crate::db::helpers::reverse_swap::{ReverseSwapCondition, ReverseSwapHelper};
+    use crate::db::helpers::swap::{SwapCondition, SwapHelper, SwapNullableCondition};
     use crate::db::models::{ChainSwap, ChainSwapData, ChainSwapInfo, ReverseSwap, Swap};
+    use crate::swap::SwapUpdate;
     use crate::swap::filters::{
         decode_script, get_currency, get_input_output_filters, parse_transaction_id,
     };
-    use crate::swap::SwapUpdate;
     use crate::wallet::{Bitcoin, Elements, Network, Wallet};
     use alloy::hex;
+    use bip39::Mnemonic;
     use mockall::mock;
+    use std::collections::HashMap;
+    use std::str::FromStr;
     use std::sync::{Arc, OnceLock};
 
     mock! {
@@ -231,6 +237,13 @@ mod test {
 
         impl SwapHelper for SwapHelper {
             fn get_all(&self, condition: SwapCondition) -> QueryResponse<Vec<Swap>>;
+            fn get_all_nullable(&self, condition: SwapNullableCondition) -> QueryResponse<Vec<Swap>>;
+            fn update_status(
+                &self,
+                id: &str,
+                status: SwapUpdate,
+                failure_reason: Option<String>,
+            ) -> QueryResponse<usize>;
         }
     }
 
@@ -261,19 +274,32 @@ mod test {
                 &self,
                 condition: ChainSwapCondition,
             ) -> QueryResponse<Vec<ChainSwapInfo>>;
+            fn get_by_data_nullable(
+                &self,
+                condition: ChainSwapDataNullableCondition,
+            ) -> QueryResponse<Vec<ChainSwapInfo>>;
         }
+    }
+
+    fn get_seed() -> [u8; 64] {
+        Mnemonic::from_str("test test test test test test test test test test test junk")
+            .unwrap()
+            .to_seed("")
     }
 
     fn get_currencies() -> Currencies {
         static CURRENCIES: OnceLock<Currencies> = OnceLock::new();
         CURRENCIES
             .get_or_init(|| {
-                Currencies::from([
+                Arc::new(HashMap::<String, Currency>::from([
                     (
                         String::from("BTC"),
                         Currency {
                             network: Network::Regtest,
-                            wallet: Arc::new(Bitcoin::new(Network::Regtest)),
+                            wallet: Arc::new(
+                                Bitcoin::new(Network::Regtest, &get_seed(), "m/0/0".to_string())
+                                    .unwrap(),
+                            ),
                             chain: Some(Arc::new(Box::new(
                                 crate::chain::chain_client::test::get_client(),
                             ))),
@@ -285,7 +311,10 @@ mod test {
                         String::from("LTC"),
                         Currency {
                             network: Network::Regtest,
-                            wallet: Arc::new(Bitcoin::new(Network::Regtest)),
+                            wallet: Arc::new(
+                                Bitcoin::new(Network::Regtest, &get_seed(), "m/0/1".to_string())
+                                    .unwrap(),
+                            ),
                             chain: None,
                             cln: None,
                             lnd: None,
@@ -295,7 +324,10 @@ mod test {
                         String::from("L-BTC"),
                         Currency {
                             network: Network::Regtest,
-                            wallet: Arc::new(Elements::new(Network::Regtest)),
+                            wallet: Arc::new(
+                                Elements::new(Network::Regtest, &get_seed(), "m/0/2".to_string())
+                                    .unwrap(),
+                            ),
                             chain: Some(Arc::new(Box::new(
                                 crate::chain::elements_client::test::get_client().0,
                             ))),
@@ -303,7 +335,7 @@ mod test {
                             lnd: None,
                         },
                     ),
-                ])
+                ]))
             })
             .clone()
     }
@@ -318,17 +350,15 @@ mod test {
             Ok(vec![
                 Swap {
                     orderSide: 0,
-                    id: "".to_string(),
-                    status: "".to_string(),
                     pair: "BTC/BTC".to_string(),
                     lockupAddress: address_bitcoin.to_string(),
+                    ..Default::default()
                 },
                 Swap {
                     orderSide: 1,
-                    id: "".to_string(),
-                    status: "".to_string(),
                     pair: "L-BTC/BTC".to_string(),
                     lockupAddress: address_elements.to_string(),
+                    ..Default::default()
                 },
             ])
         });
@@ -355,20 +385,26 @@ mod test {
         let (inputs, outputs) = chain_filters.get("BTC").unwrap();
         assert!(inputs.is_empty());
         assert_eq!(outputs.len(), 1);
-        assert!(outputs.contains(
-            &Bitcoin::new(Network::Regtest)
-                .decode_address(address_bitcoin)
-                .unwrap()
-        ));
+        assert!(
+            outputs.contains(
+                &Bitcoin::new(Network::Regtest, &get_seed(), "m/0/0".to_string())
+                    .unwrap()
+                    .decode_address(address_bitcoin)
+                    .unwrap()
+            )
+        );
 
         let (inputs, outputs) = chain_filters.get("L-BTC").unwrap();
         assert!(inputs.is_empty());
         assert_eq!(outputs.len(), 1);
-        assert!(outputs.contains(
-            &Elements::new(Network::Regtest)
-                .decode_address(address_elements)
-                .unwrap()
-        ));
+        assert!(
+            outputs.contains(
+                &Elements::new(Network::Regtest, &get_seed(), "m/0/2".to_string())
+                    .unwrap()
+                    .decode_address(address_elements)
+                    .unwrap()
+            )
+        );
     }
 
     #[test]
@@ -383,11 +419,10 @@ mod test {
         reverse.expect_get_all().returning(|_| {
             Ok(vec![ReverseSwap {
                 orderSide: 0,
-                id: "".to_string(),
-                status: "".to_string(),
                 transactionVout: Some(2),
                 pair: "L-BTC/BTC".to_string(),
                 transactionId: Some(tx_id.to_string()),
+                ..Default::default()
             }])
         });
         let reverse_swap_repo: Arc<dyn ReverseSwapHelper + Send + Sync> = Arc::new(reverse);
@@ -434,24 +469,20 @@ mod test {
                 ChainSwapInfo::new(
                     ChainSwap {
                         orderSide: 0,
-                        id: "".to_string(),
                         pair: "L-BTC/BTC".to_string(),
                         status: SwapUpdate::TransactionServerMempool.to_string(),
+                        ..Default::default()
                     },
                     vec![
                         ChainSwapData {
-                            swapId: "".to_string(),
                             transactionVout: Some(21),
                             symbol: "L-BTC".to_string(),
-                            lockupAddress: "".to_string(),
                             transactionId: Some(tx_id.to_string()),
+                            ..Default::default()
                         },
                         ChainSwapData {
-                            transactionId: None,
-                            transactionVout: None,
-                            swapId: "".to_string(),
                             symbol: "BTC".to_string(),
-                            lockupAddress: "".to_string(),
+                            ..Default::default()
                         },
                     ],
                 )
@@ -459,24 +490,19 @@ mod test {
                 ChainSwapInfo::new(
                     ChainSwap {
                         orderSide: 0,
-                        id: "".to_string(),
                         pair: "L-BTC/BTC".to_string(),
                         status: SwapUpdate::SwapCreated.to_string(),
+                        ..Default::default()
                     },
                     vec![
                         ChainSwapData {
-                            transactionId: None,
-                            transactionVout: None,
-                            swapId: "".to_string(),
                             symbol: "L-BTC".to_string(),
-                            lockupAddress: "".to_string(),
+                            ..Default::default()
                         },
                         ChainSwapData {
-                            transactionId: None,
-                            transactionVout: None,
-                            swapId: "".to_string(),
                             symbol: "BTC".to_string(),
                             lockupAddress: address.to_string(),
+                            ..Default::default()
                         },
                     ],
                 )
@@ -498,11 +524,14 @@ mod test {
         let (inputs, outputs) = chain_filters.get("BTC").unwrap();
         assert!(inputs.is_empty());
         assert_eq!(outputs.len(), 1);
-        assert!(outputs.contains(
-            &Bitcoin::new(Network::Regtest)
-                .decode_address(address)
-                .unwrap()
-        ));
+        assert!(
+            outputs.contains(
+                &Bitcoin::new(Network::Regtest, &get_seed(), "m/0/0".to_string())
+                    .unwrap()
+                    .decode_address(address)
+                    .unwrap()
+            )
+        );
 
         let (inputs, outputs) = chain_filters.get("L-BTC").unwrap();
         assert!(outputs.is_empty());
@@ -518,17 +547,7 @@ mod test {
         let currencies = get_currencies();
 
         let symbol = "BTC";
-        let currency = get_currency(
-            &currencies,
-            symbol,
-            &Swap {
-                orderSide: 0,
-                id: "".to_string(),
-                pair: "".to_string(),
-                status: "".to_string(),
-                lockupAddress: "".to_string(),
-            },
-        );
+        let currency = get_currency(&currencies, symbol, &Swap::default());
         assert!(currency.cloned().is_some());
         assert_eq!(currency.unwrap().chain.clone().unwrap().symbol(), symbol);
     }
@@ -536,46 +555,22 @@ mod test {
     #[test]
     fn test_get_currency_no_chain_client() {
         let currencies = get_currencies();
-        assert!(get_currency(
-            &currencies,
-            "LTC",
-            &Swap {
-                orderSide: 0,
-                id: "".to_string(),
-                pair: "".to_string(),
-                status: "".to_string(),
-                lockupAddress: "".to_string(),
-            }
-        )
-        .is_none());
+        assert!(get_currency(&currencies, "LTC", &Swap::default(),).is_none());
     }
 
     #[test]
     fn test_get_currency_none() {
         let currencies = get_currencies();
-        assert!(get_currency(
-            &currencies,
-            "NOTFOUND",
-            &Swap {
-                orderSide: 0,
-                id: "".to_string(),
-                pair: "".to_string(),
-                status: "".to_string(),
-                lockupAddress: "".to_string(),
-            }
-        )
-        .is_none());
+        assert!(get_currency(&currencies, "NOTFOUND", &Swap::default()).is_none());
     }
 
     #[test]
     fn test_decode_script() {
-        let wallet: Arc<dyn Wallet + Send + Sync> = Arc::new(Bitcoin::new(Network::Regtest));
+        let wallet: Arc<dyn Wallet + Send + Sync> =
+            Arc::new(Bitcoin::new(Network::Regtest, &get_seed(), "m/0/0".to_string()).unwrap());
         let swap = Swap {
-            orderSide: 0,
             id: "id".to_string(),
-            pair: "".to_string(),
-            status: "".to_string(),
-            lockupAddress: "".to_string(),
+            ..Default::default()
         };
         let address = "bcrt1pjcv9r3jeug6xmgug6hu0p4lux7r9996yxk9m2xxammfqq4kxdvkqhdu0h5";
 
@@ -587,13 +582,11 @@ mod test {
 
     #[test]
     fn test_decode_script_invalid() {
-        let wallet: Arc<dyn Wallet + Send + Sync> = Arc::new(Bitcoin::new(Network::Regtest));
+        let wallet: Arc<dyn Wallet + Send + Sync> =
+            Arc::new(Bitcoin::new(Network::Regtest, &get_seed(), "m/0/0".to_string()).unwrap());
         let swap = Swap {
-            orderSide: 0,
             id: "id".to_string(),
-            pair: "".to_string(),
-            status: "".to_string(),
-            lockupAddress: "".to_string(),
+            ..Default::default()
         };
 
         assert_eq!(decode_script(&wallet, &swap, "invalid"), None);

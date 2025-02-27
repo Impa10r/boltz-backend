@@ -1,9 +1,9 @@
 use crate::db::models::{LightningSwap, SomeSwap, SwapType};
 use crate::swap::SwapUpdate;
-use crate::utils::pair::{split_pair, OrderSide};
+use crate::utils::pair::{OrderSide, split_pair};
 use diesel::{AsChangeset, Insertable, Queryable, Selectable};
 
-#[derive(Queryable, Selectable, Insertable, AsChangeset, PartialEq, Clone, Debug)]
+#[derive(Queryable, Selectable, Insertable, AsChangeset, PartialEq, Default, Clone, Debug)]
 #[diesel(table_name = crate::db::schema::reverseSwaps)]
 #[allow(non_snake_case)]
 pub struct ReverseSwap {
@@ -38,6 +38,15 @@ impl LightningSwap for ReverseSwap {
             pair.quote
         })
     }
+
+    fn lightning_symbol(&self) -> anyhow::Result<String> {
+        let pair = split_pair(&self.pair)?;
+        Ok(if self.orderSide == OrderSide::Buy as i32 {
+            pair.quote
+        } else {
+            pair.base
+        })
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +79,14 @@ mod test {
     fn test_chain_symbol(#[case] side: OrderSide, #[case] expected: &str) {
         let swap = create_swap(Some(side));
         assert_eq!(swap.chain_symbol().unwrap(), expected);
+    }
+
+    #[rstest]
+    #[case(OrderSide::Buy, "BTC")]
+    #[case(OrderSide::Sell, "L-BTC")]
+    fn test_lightning_symbol(#[case] side: OrderSide, #[case] expected: &str) {
+        let swap = create_swap(Some(side));
+        assert_eq!(swap.lightning_symbol().unwrap(), expected);
     }
 
     fn create_swap(order_side: Option<OrderSide>) -> ReverseSwap {

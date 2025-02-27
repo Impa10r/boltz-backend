@@ -11,6 +11,13 @@ abstract class NodePendingPendingTracker {
     protected readonly nodeType: NodeType,
   ) {}
 
+  public abstract trackPayment(
+    client: LightningClient,
+    preimageHash: string,
+    invoice: string,
+    promise: Promise<PaymentResponse>,
+  ): void;
+
   public abstract watchPayment(
     client: LightningClient,
     invoice: string,
@@ -20,15 +27,6 @@ abstract class NodePendingPendingTracker {
   public abstract isPermanentError(err: unknown): boolean;
 
   public abstract parseErrorMessage(error: unknown): string;
-
-  public trackPayment = (
-    preimageHash: string,
-    promise: Promise<PaymentResponse>,
-  ) => {
-    promise
-      .then((result) => this.handleSucceededPayment(preimageHash, result))
-      .catch((error) => this.handleFailedPayment(preimageHash, error));
-  };
 
   protected handleSucceededPayment = async (
     preimageHash: string,
@@ -49,13 +47,26 @@ abstract class NodePendingPendingTracker {
     );
   };
 
-  protected handleFailedPayment = async (preimageHash: string, error: any) => {
+  protected handleFailedPayment = async (
+    client: LightningClient,
+    preimageHash: string,
+    error: any,
+  ) => {
     const isPermanent = this.isPermanentError(error);
 
     const errorMsg = this.parseErrorMessage(error);
     this.logger.debug(
       `${nodeTypeToPrettyString(this.nodeType)} payment ${preimageHash} failed ${isPermanent ? 'permanently' : 'temporarily'}: ${errorMsg}`,
     );
+
+    // Check for "Connection dropped" because the node status might be stale
+    if (!client.isConnected() || errorMsg === 'Connection dropped') {
+      this.logger.warn(
+        `Not failing payment ${preimageHash} because client is not connected`,
+      );
+      return;
+    }
+
     await LightningPaymentRepository.setStatus(
       preimageHash,
       this.nodeType,

@@ -1,19 +1,26 @@
+use crate::api::ws::types::SwapStatus;
 use crate::chain::utils::Transaction;
 use crate::currencies::{Currencies, Currency};
+use crate::db::Pool;
 use crate::db::helpers::chain_swap::{ChainSwapHelper, ChainSwapHelperDatabase};
+use crate::db::helpers::referral::ReferralHelperDatabase;
 use crate::db::helpers::reverse_swap::{ReverseSwapHelper, ReverseSwapHelperDatabase};
 use crate::db::helpers::swap::{SwapHelper, SwapHelperDatabase};
-use crate::db::Pool;
+use crate::swap::expiration::{CustomExpirationChecker, InvoiceExpirationChecker, Scheduler};
 use crate::swap::filters::get_input_output_filters;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use futures_util::future::try_join_all;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 #[async_trait]
 pub trait SwapManager {
     fn get_currency(&self, symbol: &str) -> Option<Currency>;
+
+    fn listen_to_updates(&self) -> tokio::sync::broadcast::Receiver<SwapStatus>;
 
     async fn scan_mempool(
         &self,
@@ -23,21 +30,60 @@ pub trait SwapManager {
 
 #[derive(Clone)]
 pub struct Manager {
-    currencies: Currencies,
+    update_tx: tokio::sync::broadcast::Sender<SwapStatus>,
 
+    currencies: Arc<Currencies>,
+    cancellation_token: CancellationToken,
+
+    pool: Pool,
     swap_repo: Arc<dyn SwapHelper + Sync + Send>,
     chain_swap_repo: Arc<dyn ChainSwapHelper + Sync + Send>,
     reverse_swap_repo: Arc<dyn ReverseSwapHelper + Sync + Send>,
 }
 
 impl Manager {
-    pub fn new(currencies: Currencies, pool: Pool) -> Self {
+    pub fn new(cancellation_token: CancellationToken, currencies: Currencies, pool: Pool) -> Self {
+        let (update_tx, _) = tokio::sync::broadcast::channel::<SwapStatus>(128);
+
         Manager {
-            currencies,
+            update_tx,
+            cancellation_token,
+            pool: pool.clone(),
+            currencies: Arc::new(currencies),
             swap_repo: Arc::new(SwapHelperDatabase::new(pool.clone())),
             chain_swap_repo: Arc::new(ChainSwapHelperDatabase::new(pool.clone())),
             reverse_swap_repo: Arc::new(ReverseSwapHelperDatabase::new(pool)),
         }
+    }
+
+    pub async fn start(&self) {
+        let invoice_expiration = Scheduler::new(
+            self.cancellation_token.clone(),
+            InvoiceExpirationChecker::new(
+                self.update_tx.clone(),
+                self.currencies.clone(),
+                self.swap_repo.clone(),
+            ),
+        );
+        let custom_expiration = Scheduler::new(
+            self.cancellation_token.clone(),
+            CustomExpirationChecker::new(
+                self.update_tx.clone(),
+                self.swap_repo.clone(),
+                Arc::new(ReferralHelperDatabase::new(self.pool.clone())),
+            ),
+        );
+
+        try_join_all([
+            tokio::spawn(async move {
+                invoice_expiration.start().await;
+            }),
+            tokio::spawn(async move {
+                custom_expiration.start().await;
+            }),
+        ])
+        .await
+        .unwrap();
     }
 }
 
@@ -45,6 +91,10 @@ impl Manager {
 impl SwapManager for Manager {
     fn get_currency(&self, symbol: &str) -> Option<Currency> {
         self.currencies.get(symbol).cloned()
+    }
+
+    fn listen_to_updates(&self) -> tokio::sync::broadcast::Receiver<SwapStatus> {
+        self.update_tx.subscribe()
     }
 
     async fn scan_mempool(
@@ -117,5 +167,33 @@ impl SwapManager for Manager {
         }
 
         Ok(transactions)
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use crate::api::ws::types::SwapStatus;
+    use crate::chain::utils::Transaction;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use mockall::mock;
+
+    mock! {
+        pub Manager {}
+
+        impl Clone for Manager {
+            fn clone(&self) -> Self;
+        }
+
+        #[async_trait]
+        impl SwapManager for Manager {
+            fn get_currency(&self, symbol: &str) -> Option<Currency>;
+            fn listen_to_updates(&self) -> tokio::sync::broadcast::Receiver<SwapStatus>;
+            async fn scan_mempool(
+                &self,
+                symbols: Option<Vec<String>>,
+            ) -> Result<HashMap<String, Vec<Transaction>>>;
+        }
     }
 }

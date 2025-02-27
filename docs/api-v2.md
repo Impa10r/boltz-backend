@@ -105,6 +105,7 @@ import ws from 'ws';
 
 // Endpoint of the Boltz instance to be used
 const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
 
 // The invoice you want to have paid
 const invoice = '<invoice that should be paid>';
@@ -127,7 +128,7 @@ const submarineSwap = async () => {
   console.log();
 
   // Create a WebSocket and subscribe to updates for the created swap
-  const webSocket = new ws(`${endpoint.replace('http://', 'ws://')}/v2/ws`);
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
   webSocket.on('open', () => {
     webSocket.send(
       JSON.stringify({
@@ -251,6 +252,7 @@ import ws from 'ws';
 
 // Endpoint of the Boltz instance to be used
 const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
 
 // The invoice you want to have paid
 const invoice = '<invoice that should be paid>';
@@ -273,7 +275,7 @@ const submarineSwap = async () => {
   console.log();
 
   // Create a WebSocket and subscribe to updates for the created swap
-  const webSocket = new ws(`${endpoint.replace('http://', 'ws://')}/v2/ws`);
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
   webSocket.on('open', () => {
     webSocket.send(
       JSON.stringify({
@@ -381,6 +383,117 @@ const submarineSwap = async () => {
 
 {% endtab %}
 
+{% tab title="TypeScript RBTC" %}
+
+```typescript
+import axios from 'axios';
+import bolt11 from 'bolt11';
+import EtherSwapArtifact from 'boltz-core/out/EtherSwap.sol/EtherSwap.json';
+import { EtherSwap } from 'boltz-core/typechain/EtherSwap';
+import { Contract, JsonRpcProvider, Wallet } from 'ethers';
+import ws from 'ws';
+
+const satoshiWeiFactor = 10n ** 10n;
+
+// Endpoint of the Boltz instance to be used
+const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
+
+// EVM config
+const providerEndpoint = 'http://127.0.0.1:8545';
+const signerMnemonic =
+  'test test test test test test test test test test test junk';
+
+// The invoice you want to have paid
+const invoice =
+  'lnbcrt1m1pnkl4sppp5vc2zmdw9x2xr63nngr73da6u863kfhmxc68nm7eycarwq760xgdqdqqcqzzsxqyz5vqsp5vz26y0ckx205lrm2d3mz23ynkp26kshumn0zjvc7xgkjtfh7l8mq9qxpqysgqn45lz8rn990f77ftrk3rvg03dlmnj9ze2ue9p3eypzau84w3wluz2g25ydj94kefur0v8ln6e4f76n29jsqjraatpq0mdazrl5klpdcp5v4dg8';
+
+const submarineSwap = async () => {
+  // Create a Submarine Swap
+  const createdResponse = (
+    await axios.post(`${endpoint}/v2/swap/submarine`, {
+      invoice,
+      to: 'BTC',
+      from: 'RBTC',
+    })
+  ).data;
+
+  console.log('Created swap');
+  console.log(createdResponse);
+  console.log();
+
+  // Create a WebSocket and subscribe to updates for the created swap
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
+  webSocket.on('open', () => {
+    webSocket.send(
+      JSON.stringify({
+        op: 'subscribe',
+        channel: 'swap.update',
+        args: [createdResponse.id],
+      }),
+    );
+  });
+
+  webSocket.on('message', async (rawMsg) => {
+    const msg = JSON.parse(rawMsg.toString('utf-8'));
+    if (msg.event !== 'update') {
+      return;
+    }
+
+    console.log('Got WebSocket update');
+    console.log(msg);
+    console.log();
+
+    switch (msg.args[0].status) {
+      // "invoice.set" means Boltz is waiting for an onchain transaction to be sent
+      case 'invoice.set': {
+        const provider = new JsonRpcProvider(providerEndpoint);
+
+        const contracts = (
+          await axios.get(`${endpoint}/v2/chain/RBTC/contracts`)
+        ).data;
+        const contract = new Contract(
+          contracts.swapContracts.EtherSwap,
+          EtherSwapArtifact.abi,
+          Wallet.fromPhrase(signerMnemonic).connect(provider),
+        ) as unknown as EtherSwap;
+
+        const invoicePreimageHash = Buffer.from(
+          bolt11
+            .decode(invoice)
+            .tags.find((tag) => tag.tagName === 'payment_hash')!.data as string,
+          'hex',
+        );
+
+        const tx = await contract.lock(
+          invoicePreimageHash,
+          createdResponse.claimAddress,
+          createdResponse.timeoutBlockHeight,
+          {
+            value: BigInt(createdResponse.expectedAmount) * satoshiWeiFactor,
+          },
+        );
+        console.log(`Sent RBTC in: ${tx.hash}`);
+        break;
+      }
+
+      case 'transaction.claimed':
+      // Boltz is batch claiming on EVM chains, so we can treat this status as success
+      case 'transaction.claim.pending':
+        console.log('Swap successful');
+        webSocket.close();
+        break;
+    }
+  });
+};
+
+(async () => {
+  await submarineSwap();
+})();
+```
+
+{% endtab %}
+
 {% tab title="Go Bitcoin" %}
 
 ```go
@@ -394,12 +507,12 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"os"
 
-	"github.com/BoltzExchange/boltz-client/boltz"
+	"github.com/BoltzExchange/boltz-client/v2/pkg/boltz"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
-const endpoint = "<Boltz API endpoint to use>"
-const invoice = "<invoice that should be paid>"
+const endpoint = "<Boltz API endpoint>"
+const invoice = "<the invoice you want to pay"
 
 var network = boltz.Regtest
 
@@ -419,7 +532,7 @@ func submarineSwap() error {
 		return err
 	}
 
-	boltzApi := &boltz.Boltz{URL: endpoint}
+	boltzApi := &boltz.Api{URL: endpoint}
 
 	swap, err := boltzApi.CreateSwap(boltz.CreateSwapRequest{
 		From:            boltz.CurrencyBtc,
@@ -437,7 +550,7 @@ func submarineSwap() error {
 	}
 
 	tree := swap.SwapTree.Deserialize()
-	if err := tree.Init(false, keys, boltzPubKey); err != nil {
+	if err := tree.Init(boltz.CurrencyBtc, false, keys, boltzPubKey); err != nil {
 		return err
 	}
 
@@ -447,7 +560,7 @@ func submarineSwap() error {
 	}
 
 	// Check the scripts of the Taptree to make sure Boltz is not cheating
-	if err := tree.Check(false, swap.TimeoutBlockHeight, decodedInvoice.PaymentHash[:]); err != nil {
+	if err := tree.Check(boltz.NormalSwap, swap.TimeoutBlockHeight, decodedInvoice.PaymentHash[:]); err != nil {
 		return err
 	}
 
@@ -459,7 +572,7 @@ func submarineSwap() error {
 	fmt.Println("Swap created")
 	printJson(swap)
 
-	boltzWs := boltz.NewBoltzWebsocket(endpoint)
+	boltzWs := boltzApi.NewWebsocket()
 	if err := boltzWs.Connect(); err != nil {
 		return fmt.Errorf("Could not connect to Boltz websocket: %s", err)
 	}
@@ -470,6 +583,8 @@ func submarineSwap() error {
 
 	for update := range boltzWs.Updates {
 		parsedStatus := boltz.ParseEvent(update.Status)
+
+		printJson(update)
 
 		switch parsedStatus {
 		case boltz.InvoiceSet:
@@ -515,6 +630,7 @@ func submarineSwap() error {
 			}
 			break
 		}
+
 	}
 
 	return nil
@@ -560,6 +676,7 @@ import ws from 'ws';
 
 // Endpoint of the Boltz instance to be used
 const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
 
 // Amount you want to swap
 const invoiceAmount = 100_000;
@@ -576,7 +693,7 @@ const reverseSwap = async () => {
   const preimage = randomBytes(32);
   const keys = ECPairFactory(ecc).makeRandom();
 
-  // Create a Submarine Swap
+  // Create a Reverse Swap
   const createdResponse = (
     await axios.post(`${endpoint}/v2/swap/reverse`, {
       invoiceAmount,
@@ -592,7 +709,7 @@ const reverseSwap = async () => {
   console.log();
 
   // Create a WebSocket and subscribe to updates for the created swap
-  const webSocket = new ws(`${endpoint.replace('http://', 'ws://')}/v2/ws`);
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
   webSocket.on('open', () => {
     webSocket.send(
       JSON.stringify({
@@ -753,6 +870,7 @@ import ws from 'ws';
 
 // Endpoint of the Boltz instance to be used
 const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
 
 // Amount you want to swap
 const invoiceAmount = 100_000;
@@ -770,7 +888,7 @@ const reverseSwap = async () => {
   const preimage = randomBytes(32);
   const keys = ECPairFactory(ecc).makeRandom();
 
-  // Create a Submarine Swap
+  // Create a Reverse Swap
   const createdResponse = (
     await axios.post(`${endpoint}/v2/swap/reverse`, {
       invoiceAmount,
@@ -786,7 +904,7 @@ const reverseSwap = async () => {
   console.log();
 
   // Create a WebSocket and subscribe to updates for the created swap
-  const webSocket = new ws(`${endpoint.replace('http://', 'ws://')}/v2/ws`);
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
   webSocket.on('open', () => {
     webSocket.send(
       JSON.stringify({
@@ -930,6 +1048,118 @@ const reverseSwap = async () => {
 
 {% endtab %}
 
+{% tab title="TypeScript RBTC" %}
+
+```typescript
+import axios from 'axios';
+import { crypto } from 'bitcoinjs-lib';
+import EtherSwapArtifact from 'boltz-core/out/EtherSwap.sol/EtherSwap.json';
+import { EtherSwap } from 'boltz-core/typechain/EtherSwap';
+import { randomBytes } from 'crypto';
+import { Contract, JsonRpcProvider, Wallet } from 'ethers';
+import ws from 'ws';
+
+const satoshiWeiFactor = 10n ** 10n;
+
+// Endpoint of the Boltz instance to be used
+const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
+
+// EVM config
+const providerEndpoint = 'http://127.0.0.1:8545';
+const signerMnemonic =
+  'test test test test test test test test test test test junk';
+
+// Amount you want to swap
+const invoiceAmount = 100_000;
+
+const reverseSwap = async () => {
+  // Create a random preimage for the swap; has to have a length of 32 bytes
+  const preimage = randomBytes(32);
+
+  const signer = Wallet.fromPhrase(signerMnemonic);
+
+  // Create a Reverse Swap
+  const createdResponse = (
+    await axios.post(`${endpoint}/v2/swap/reverse`, {
+      invoiceAmount,
+      to: 'RBTC',
+      from: 'BTC',
+      claimAddress: await signer.getAddress(),
+      preimageHash: crypto.sha256(preimage).toString('hex'),
+    })
+  ).data;
+
+  console.log('Created swap');
+  console.log(createdResponse);
+  console.log();
+
+  // Create a WebSocket and subscribe to updates for the created swap
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
+  webSocket.on('open', () => {
+    webSocket.send(
+      JSON.stringify({
+        op: 'subscribe',
+        channel: 'swap.update',
+        args: [createdResponse.id],
+      }),
+    );
+  });
+
+  webSocket.on('message', async (rawMsg) => {
+    const msg = JSON.parse(rawMsg.toString('utf-8'));
+    if (msg.event !== 'update') {
+      return;
+    }
+
+    console.log('Got WebSocket update');
+    console.log(msg);
+    console.log();
+
+    switch (msg.args[0].status) {
+      case 'swap.created': {
+        console.log('Waiting for invoice to be paid');
+        break;
+      }
+
+      // "transaction.confirmed" means we can claim the RBTC
+      case 'transaction.confirmed': {
+        const provider = new JsonRpcProvider(providerEndpoint);
+
+        const contracts = (
+          await axios.get(`${endpoint}/v2/chain/RBTC/contracts`)
+        ).data;
+        const contract = new Contract(
+          contracts.swapContracts.EtherSwap,
+          EtherSwapArtifact.abi,
+          signer.connect(provider),
+        ) as unknown as EtherSwap;
+
+        const tx = await contract['claim(bytes32,uint256,address,uint256)'](
+          preimage,
+          BigInt(createdResponse.onchainAmount) * satoshiWeiFactor,
+          createdResponse.refundAddress,
+          createdResponse.timeoutBlockHeight,
+        );
+        console.log(`Claimed RBTC in: ${tx.hash}`);
+        break;
+      }
+
+      case 'invoice.settled':
+        console.log('Swap successful');
+        webSocket.close();
+        break;
+    }
+  });
+};
+
+(async () => {
+  await reverseSwap();
+})();
+```
+
+{% endtab %}
+
 {% tab title="Go Bitcoin" %}
 
 ```go
@@ -942,13 +1172,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/BoltzExchange/boltz-client/boltz"
+	"github.com/BoltzExchange/boltz-client/v2/pkg/boltz"
 	"github.com/btcsuite/btcd/btcec/v2"
 )
 
-const endpoint = "<Boltz API endpoint to use>"
+const endpoint = "<Boltz API endpoint>"
 const invoiceAmount = 100000
 const destinationAddress = "<address to which the swap should be claimed>"
+
+// Swap from Lightning to BTC mainchain
+var toCurrency = boltz.CurrencyBtc
 
 var network = boltz.Regtest
 
@@ -975,11 +1208,11 @@ func reverseSwap() error {
 	}
 	preimageHash := sha256.Sum256(preimage)
 
-	boltzApi := &boltz.Boltz{URL: endpoint}
+	boltzApi := &boltz.Api{URL: endpoint}
 
 	swap, err := boltzApi.CreateReverseSwap(boltz.CreateReverseSwapRequest{
 		From:           boltz.CurrencyBtc,
-		To:             boltz.CurrencyBtc,
+		To:             toCurrency,
 		ClaimPublicKey: ourKeys.PubKey().SerializeCompressed(),
 		PreimageHash:   preimageHash[:],
 		InvoiceAmount:  invoiceAmount,
@@ -994,18 +1227,18 @@ func reverseSwap() error {
 	}
 
 	tree := swap.SwapTree.Deserialize()
-	if err := tree.Init(false, ourKeys, boltzPubKey); err != nil {
+	if err := tree.Init(toCurrency, false, ourKeys, boltzPubKey); err != nil {
 		return err
 	}
 
-	if err := tree.Check(true, swap.TimeoutBlockHeight, preimageHash[:]); err != nil {
+	if err := tree.Check(boltz.ReverseSwap, swap.TimeoutBlockHeight, preimageHash[:]); err != nil {
 		return err
 	}
 
 	fmt.Println("Swap created")
 	printJson(swap)
 
-	boltzWs := boltz.NewBoltzWebsocket(endpoint)
+	boltzWs := boltzApi.NewWebsocket()
 	if err := boltzWs.Connect(); err != nil {
 		return fmt.Errorf("Could not connect to Boltz websocket: %w", err)
 	}
@@ -1025,7 +1258,7 @@ func reverseSwap() error {
 			break
 
 		case boltz.TransactionMempool:
-			lockupTransaction, err := boltz.NewTxFromHex(boltz.CurrencyBtc, update.Transaction.Hex, nil)
+			lockupTransaction, err := boltz.NewTxFromHex(toCurrency, update.Transaction.Hex, nil)
 			if err != nil {
 				return err
 			}
@@ -1043,6 +1276,7 @@ func reverseSwap() error {
 					{
 						SwapId:            swap.Id,
 						SwapType:          boltz.ReverseSwap,
+						Address:           destinationAddress,
 						LockupTransaction: lockupTransaction,
 						Vout:              vout,
 						Preimage:          preimage,
@@ -1051,7 +1285,6 @@ func reverseSwap() error {
 						Cooperative:       true,
 					},
 				},
-				destinationAddress,
 				satPerVbyte,
 				boltzApi,
 			)
@@ -1059,12 +1292,17 @@ func reverseSwap() error {
 				return fmt.Errorf("could not create claim transaction: %w", err)
 			}
 
-			response, err := boltzApi.BroadcastTransaction(claimTransaction)
+			txHex, err := claimTransaction.Serialize()
+			if err != nil {
+				return fmt.Errorf("could not serialize claim transaction: %w", err)
+			}
+
+			txId, err := boltzApi.BroadcastTransaction(toCurrency, txHex)
 			if err != nil {
 				return fmt.Errorf("could not broadcast transaction: %w", err)
 			}
 
-			fmt.Printf("Broadcast claim transaction: %s\n", response.TransactionId)
+			fmt.Printf("Broadcast claim transaction: %s\n", txId)
 			break
 
 		case boltz.InvoiceSettled:
@@ -1116,6 +1354,7 @@ import ws from 'ws';
 
 // Endpoint of the Boltz instance to be used
 const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
 
 // Amount you want to swap
 const userLockAmount = 100_000;
@@ -1253,7 +1492,7 @@ const chainSwap = async () => {
   const claimKeys = ECPairFactory(ecc).makeRandom();
   const refundKeys = ECPairFactory(ecc).makeRandom();
 
-  // Create a Submarine Swap
+  // Create a Chain Swap
   const createdResponse = (
     await axios.post(`${endpoint}/v2/swap/chain`, {
       userLockAmount,
@@ -1270,7 +1509,7 @@ const chainSwap = async () => {
   console.log();
 
   // Create a WebSocket and subscribe to updates for the created swap
-  const webSocket = new ws(`${endpoint.replace('http://', 'ws://')}/v2/ws`);
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
   webSocket.on('open', () => {
     webSocket.send(
       JSON.stringify({
@@ -1359,6 +1598,165 @@ const chainSwap = async () => {
         await axios.post(`${endpoint}/v2/chain/L-BTC/transaction`, {
           hex: claimDetails.transaction.toHex(),
         });
+
+        break;
+      }
+
+      case 'transaction.claimed':
+        console.log('Swap successful');
+        webSocket.close();
+        break;
+    }
+  });
+};
+
+(async () => {
+  await chainSwap();
+})();
+```
+
+{% endtab %}
+
+{% tab title="TypeScript Bitcoin -> RBTC" %}
+
+```typescript
+import zkpInit from '@vulpemventures/secp256k1-zkp';
+import axios from 'axios';
+import { crypto } from 'bitcoinjs-lib';
+import { Musig, SwapTreeSerializer, TaprootUtils } from 'boltz-core';
+import EtherSwapArtifact from 'boltz-core/out/EtherSwap.sol/EtherSwap.json';
+import { EtherSwap } from 'boltz-core/typechain/EtherSwap';
+import { randomBytes } from 'crypto';
+import ECPairFactory from 'ecpair';
+import { Contract, JsonRpcProvider, Wallet } from 'ethers';
+import * as ecc from 'tiny-secp256k1';
+import ws from 'ws';
+
+const satoshiWeiFactor = 10n ** 10n;
+
+// Endpoint of the Boltz instance to be used
+const endpoint = 'http://127.0.0.1:9001';
+const webSocketEndpoint = 'ws://127.0.0.1:9004';
+
+// Amount you want to swap
+const userLockAmount = 100_000;
+
+// EVM config
+const providerEndpoint = 'http://127.0.0.1:8545';
+const signerMnemonic =
+  'test test test test test test test test test test test junk';
+
+const chainSwap = async () => {
+  // Create a random preimage for the swap; has to have a length of 32 bytes
+  const preimage = randomBytes(32);
+
+  const refundKeys = ECPairFactory(ecc).makeRandom();
+
+  const signer = Wallet.fromPhrase(signerMnemonic);
+
+  const createdResponse = (
+    await axios.post(`${endpoint}/v2/swap/chain`, {
+      userLockAmount,
+      to: 'RBTC',
+      from: 'BTC',
+      claimAddress: await signer.getAddress(),
+      preimageHash: crypto.sha256(preimage).toString('hex'),
+      refundPublicKey: refundKeys.publicKey.toString('hex'),
+    })
+  ).data;
+
+  console.log('Created swap');
+  console.log(createdResponse);
+  console.log();
+
+  const webSocket = new ws(`${webSocketEndpoint}/v2/ws`);
+  webSocket.on('open', () => {
+    webSocket.send(
+      JSON.stringify({
+        op: 'subscribe',
+        channel: 'swap.update',
+        args: [createdResponse.id],
+      }),
+    );
+  });
+
+  webSocket.on('message', async (rawMsg) => {
+    const msg = JSON.parse(rawMsg.toString('utf-8'));
+    if (msg.event !== 'update') {
+      return;
+    }
+
+    console.log('Got WebSocket update');
+    console.log(msg);
+    console.log();
+
+    switch (msg.args[0].status) {
+      case 'swap.created': {
+        console.log('Waiting for coins to be locked');
+        break;
+      }
+
+      // "transaction.server.confirmed" means we can claim the RBTC
+      case 'transaction.server.confirmed': {
+        const provider = new JsonRpcProvider(providerEndpoint);
+
+        const contracts = (
+          await axios.get(`${endpoint}/v2/chain/RBTC/contracts`)
+        ).data;
+        const contract = new Contract(
+          contracts.swapContracts.EtherSwap,
+          EtherSwapArtifact.abi,
+          signer.connect(provider),
+        ) as unknown as EtherSwap;
+
+        const tx = await contract['claim(bytes32,uint256,address,uint256)'](
+          preimage,
+          BigInt(createdResponse.claimDetails.amount) * satoshiWeiFactor,
+          createdResponse.claimDetails.refundAddress,
+          createdResponse.claimDetails.timeoutBlockHeight,
+        );
+        console.log(`Claimed RBTC in: ${tx.hash}`);
+        break;
+      }
+
+      // We can help the server claim the BTC cooperatively in this status,
+      // else the server will batch claim via script path on interval
+      case 'transaction.claim.pending': {
+        const claimDetails = (
+          await axios.get(
+            `${endpoint}/v2/swap/chain/${createdResponse.id}/claim`,
+          )
+        ).data;
+        const boltzPubicKey = Buffer.from(claimDetails.publicKey, 'hex');
+
+        const musig = new Musig(await zkpInit(), refundKeys, randomBytes(32), [
+          boltzPubicKey,
+          refundKeys.publicKey,
+        ]);
+        TaprootUtils.tweakMusig(
+          musig,
+          SwapTreeSerializer.deserializeSwapTree(
+            createdResponse.lockupDetails.swapTree,
+          ).tree,
+        );
+        musig.aggregateNonces([
+          [boltzPubicKey, Buffer.from(claimDetails.pubNonce, 'hex')],
+        ]);
+        musig.initializeSession(
+          Buffer.from(claimDetails.transactionHash, 'hex'),
+        );
+
+        const partialSignature = musig.signPartial();
+
+        await axios.post(
+          `${endpoint}/v2/swap/chain/${createdResponse.id}/claim`,
+          {
+            signature: {
+              pubNonce: Buffer.from(musig.getPublicNonce()).toString('hex'),
+              partialSignature: Buffer.from(partialSignature).toString('hex'),
+            },
+          },
+        );
 
         break;
       }

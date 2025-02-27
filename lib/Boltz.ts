@@ -26,11 +26,9 @@ import GrpcService from './grpc/GrpcService';
 import { LightningClient } from './lightning/LightningClient';
 import LndClient from './lightning/LndClient';
 import ClnClient from './lightning/cln/ClnClient';
-import MpayClient from './lightning/cln/MpayClient';
 import NotificationClient from './notifications/NotificationClient';
 import NotificationProvider from './notifications/NotificationProvider';
 import Blocks from './service/Blocks';
-import CountryCodes from './service/CountryCodes';
 import Service from './service/Service';
 import Sidecar from './sidecar/Sidecar';
 import NodeSwitch from './swap/NodeSwitch';
@@ -52,7 +50,6 @@ class Boltz {
 
   private readonly api!: Api;
   private readonly blocks: Blocks;
-  private readonly countryCodes: CountryCodes;
   private readonly grpcServer!: GrpcServer;
   private readonly prometheus: Prometheus;
 
@@ -95,7 +92,6 @@ class Boltz {
       false,
     );
 
-    Sidecar.start(this.logger, this.config);
     registerExitHandler(async () => {
       await this.grpcServer.close();
       await this.db.close();
@@ -199,13 +195,7 @@ class Boltz {
         new GrpcService(this.logger, this.service),
       );
 
-      this.countryCodes = new CountryCodes(this.logger, this.config.marking);
-      this.api = new Api(
-        this.logger,
-        this.config.api,
-        this.service,
-        this.countryCodes,
-      );
+      this.api = new Api(this.logger, this.config.api, this.service);
 
       this.prometheus = new Prometheus(
         this.logger,
@@ -230,6 +220,10 @@ class Boltz {
       await this.db.migrate(this.currencies);
       await this.db.init();
 
+      // To initialize the key provider before starting the sidecar
+      await this.walletManager.init(this.config.currencies);
+
+      Sidecar.start(this.logger, this.config);
       await this.sidecar.connect(this.service.eventHandler, this.api.swapInfos);
       await this.sidecar.validateVersion();
       await this.sidecar.start();
@@ -261,7 +255,6 @@ class Boltz {
         }),
       );
 
-      await this.walletManager.init(this.config.currencies);
       await this.service.init(this.config.pairs);
 
       await this.service.swapManager.init(
@@ -273,10 +266,7 @@ class Boltz {
 
       await this.grpcServer.listen();
 
-      await Promise.all([
-        this.countryCodes.downloadRanges(),
-        this.blocks.updateBlocks(),
-      ]);
+      await this.blocks.updateBlocks();
       await this.api.init();
 
       // Rescan chains after everything else was initialized to avoid race conditions
@@ -411,19 +401,6 @@ class Boltz {
           client.symbol,
           holdInfo.version,
         );
-
-        if (client.useMpay()) {
-          const mpayInfo = await client.mpay!.getInfo();
-          this.logger.verbose(
-            `${client.symbol} ${MpayClient.serviceName} version: ${mpayInfo.version}`,
-          );
-
-          VersionCheck.checkLightningVersion(
-            MpayClient.serviceName,
-            client.symbol,
-            mpayInfo.version,
-          );
-        }
       }
 
       this.logStatus(service, info);

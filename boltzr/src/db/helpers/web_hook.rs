@@ -1,7 +1,7 @@
+use crate::db::Pool;
 use crate::db::helpers::QueryResponse;
 use crate::db::models::{WebHook, WebHookState};
 use crate::db::schema::{chainSwaps, reverseSwaps, swaps, web_hooks};
-use crate::db::Pool;
 use diesel::prelude::*;
 use diesel::{insert_into, update};
 use tracing::{instrument, trace};
@@ -105,8 +105,8 @@ impl WebHookHelper for WebHookHelperDatabase {
 mod test {
     use crate::db::helpers::web_hook::{WebHookHelper, WebHookHelperDatabase};
     use crate::db::models::{WebHook, WebHookState};
-    use crate::db::{connect, Config, Pool};
-    use rand::distributions::{Alphanumeric, DistString};
+    use crate::db::{Config, Pool, connect};
+    use rand::distr::{Alphanumeric, SampleString};
     use std::sync::{Mutex, OnceLock};
 
     pub fn get_pool() -> Pool {
@@ -133,7 +133,7 @@ mod test {
         let helper = WebHookHelperDatabase::new(get_pool());
 
         let hook = WebHook {
-            id: Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
+            id: Alphanumeric.sample_string(&mut rand::rng(), 8),
             state: WebHookState::Ok.into(),
             url: "https://some.thing".to_string(),
             hash_swap_id: true,
@@ -148,7 +148,7 @@ mod test {
         let helper = WebHookHelperDatabase::new(get_pool());
 
         let hook = WebHook {
-            id: Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
+            id: Alphanumeric.sample_string(&mut rand::rng(), 8),
             state: WebHookState::Ok.into(),
             url: "https://some.thing".to_string(),
             hash_swap_id: true,
@@ -163,7 +163,7 @@ mod test {
         let helper = WebHookHelperDatabase::new(get_pool());
 
         let mut hook = WebHook {
-            id: Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
+            id: Alphanumeric.sample_string(&mut rand::rng(), 8),
             state: WebHookState::Ok.into(),
             url: "https://some.thing".to_string(),
             hash_swap_id: true,

@@ -1,7 +1,8 @@
 import { Transaction } from 'bitcoinjs-lib';
 import bolt11, { RoutingInfo } from 'bolt11';
 import { detectSwap } from 'boltz-core';
-import { DataTypes, Op, Sequelize } from 'sequelize';
+import { Transaction as EthersTransaction } from 'ethers';
+import { DataTypes, Op, QueryTypes, Sequelize } from 'sequelize';
 import Logger from '../Logger';
 import {
   createApiCredential,
@@ -12,20 +13,23 @@ import {
   getLightningCurrency,
   splitPairId,
 } from '../Utils';
-import { SwapVersion, swapTypeToPrettyString } from '../consts/Enums';
+import { SwapType, SwapVersion, swapTypeToPrettyString } from '../consts/Enums';
 import { Currency } from '../wallet/WalletManager';
+import { Rsk } from '../wallet/ethereum/EvmNetworks';
 import ChainSwap from './models/ChainSwap';
 import ChannelCreation from './models/ChannelCreation';
 import DatabaseVersion from './models/DatabaseVersion';
 import LightningPayment, {
   LightningPaymentStatus,
 } from './models/LightningPayment';
+import PendingEthereumTransaction from './models/PendingEthereumTransaction';
 import PendingLockupTransaction from './models/PendingLockupTransaction';
-import Referral from './models/Referral';
+import Referral, { ReferralConfig } from './models/Referral';
 import ReverseSwap, { NodeType } from './models/ReverseSwap';
 import Swap from './models/Swap';
 import DatabaseVersionRepository from './repositories/DatabaseVersionRepository';
 import LightningPaymentRepository from './repositories/LightningPaymentRepository';
+import PendingEthereumTransactionRepository from './repositories/PendingEthereumTransactionRepository';
 
 const coalesceInvoiceAmount = (
   decoded: bolt11.PaymentRequestObject,
@@ -93,7 +97,7 @@ const decodeInvoice = (
 
 // TODO: integration tests for actual migrations
 class Migration {
-  private static latestSchemaVersion = 12;
+  private static latestSchemaVersion = 16;
 
   private toBackFill: number[] = [];
 
@@ -570,6 +574,152 @@ class Migration {
           });
 
         this.toBackFill.push(11);
+        await this.finishMigration(versionRow.version, currencies);
+        break;
+      }
+
+      case 12: {
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(Referral.tableName, 'submarinePremium', {
+            type: new DataTypes.INTEGER(),
+            allowNull: true,
+          });
+
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(Referral.tableName, 'reversePremium', {
+            type: new DataTypes.INTEGER(),
+            allowNull: true,
+          });
+
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(Referral.tableName, 'chainPremium', {
+            type: new DataTypes.INTEGER(),
+            allowNull: true,
+          });
+
+        await this.finishMigration(versionRow.version, currencies);
+        break;
+      }
+
+      case 13: {
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(Referral.tableName, 'config', {
+            type: new DataTypes.JSON(),
+            allowNull: true,
+          });
+
+        const refs: {
+          id: string;
+          submarinePremium: number;
+          reversePremium: number;
+          chainPremium: number;
+        }[] = await this.sequelize.query(
+          'SELECT id, "submarinePremium", "reversePremium", "chainPremium" FROM referrals',
+          {
+            type: QueryTypes.SELECT,
+          },
+        );
+
+        await this.sequelize.transaction(async (transaction) => {
+          for (const ref of refs) {
+            await Referral.update(
+              {
+                config: {
+                  premiums: {
+                    [SwapType.Submarine]: ref.submarinePremium || undefined,
+                    [SwapType.ReverseSubmarine]:
+                      ref.reversePremium || undefined,
+                    [SwapType.Chain]: ref.chainPremium || undefined,
+                  },
+                } as ReferralConfig,
+              },
+              {
+                transaction,
+                where: {
+                  id: ref.id,
+                },
+              },
+            );
+          }
+        });
+
+        await this.sequelize.query(
+          'ALTER TABLE referrals DROP COLUMN "submarinePremium"',
+        );
+        await this.sequelize.query(
+          'ALTER TABLE referrals DROP COLUMN "reversePremium"',
+        );
+        await this.sequelize.query(
+          'ALTER TABLE referrals DROP COLUMN "chainPremium"',
+        );
+
+        await this.finishMigration(versionRow.version, currencies);
+        break;
+      }
+
+      case 14: {
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(LightningPayment.tableName, 'retries', {
+            type: new DataTypes.INTEGER(),
+            allowNull: true,
+          });
+
+        await this.finishMigration(versionRow.version, currencies);
+        break;
+      }
+
+      case 15: {
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(PendingEthereumTransaction.tableName, 'etherAmount', {
+            type: new DataTypes.DECIMAL(),
+            allowNull: true,
+          });
+        await this.sequelize
+          .getQueryInterface()
+          .addColumn(PendingEthereumTransaction.tableName, 'hex', {
+            type: new DataTypes.TEXT(),
+            allowNull: true,
+          });
+
+        const txs =
+          await PendingEthereumTransactionRepository.getTransactions();
+        for (const tx of txs) {
+          const fetchedTx = await currencies
+            .get(Rsk.symbol)
+            ?.provider!.getTransaction(tx.hash);
+
+          if (fetchedTx === undefined || fetchedTx === null) {
+            this.logger.warn(
+              `Could not fetch pending EVM transaction ${tx.hash}`,
+            );
+            continue;
+          }
+
+          await tx.update({
+            etherAmount: fetchedTx.value,
+            hex: EthersTransaction.from(fetchedTx).serialized,
+          });
+        }
+
+        await this.sequelize
+          .getQueryInterface()
+          .changeColumn(PendingEthereumTransaction.tableName, 'etherAmount', {
+            type: new DataTypes.DECIMAL(),
+            allowNull: false,
+          });
+        await this.sequelize
+          .getQueryInterface()
+          .changeColumn(PendingEthereumTransaction.tableName, 'hex', {
+            type: new DataTypes.TEXT(),
+            allowNull: false,
+          });
+
         await this.finishMigration(versionRow.version, currencies);
         break;
       }

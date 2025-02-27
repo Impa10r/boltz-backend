@@ -1,17 +1,27 @@
 use crate::db::models::{LightningSwap, SomeSwap, SwapType};
 use crate::swap::SwapUpdate;
-use crate::utils::pair::{split_pair, OrderSide};
+use crate::utils::pair::{OrderSide, split_pair};
 use diesel::{AsChangeset, Insertable, Queryable, Selectable};
 
-#[derive(Queryable, Selectable, Insertable, AsChangeset, PartialEq, Clone, Debug)]
+#[derive(Queryable, Selectable, Insertable, AsChangeset, PartialEq, Default, Clone, Debug)]
 #[diesel(table_name = crate::db::schema::swaps)]
 #[allow(non_snake_case)]
 pub struct Swap {
     pub id: String,
+    pub referral: Option<String>,
     pub pair: String,
     pub orderSide: i32,
     pub status: String,
+    pub failureReason: Option<String>,
+    pub invoice: Option<String>,
+    pub keyIndex: Option<i32>,
+    pub refundPublicKey: Option<String>,
+    pub timeoutBlockHeight: i32,
+    pub redeemScript: Option<String>,
     pub lockupAddress: String,
+    pub lockupTransactionId: Option<String>,
+    pub lockupTransactionVout: Option<i32>,
+    pub createdAt: chrono::NaiveDateTime,
 }
 
 impl SomeSwap for Swap {
@@ -35,6 +45,15 @@ impl LightningSwap for Swap {
             pair.quote
         } else {
             pair.base
+        })
+    }
+
+    fn lightning_symbol(&self) -> anyhow::Result<String> {
+        let pair = split_pair(&self.pair)?;
+        Ok(if self.orderSide == OrderSide::Buy as i32 {
+            pair.base
+        } else {
+            pair.quote
         })
     }
 }
@@ -71,13 +90,21 @@ mod test {
         assert_eq!(swap.chain_symbol().unwrap(), expected);
     }
 
+    #[rstest]
+    #[case(OrderSide::Buy, "L-BTC")]
+    #[case(OrderSide::Sell, "BTC")]
+    fn test_lightning_symbol(#[case] side: OrderSide, #[case] expected: &str) {
+        let swap = create_swap(Some(side));
+        assert_eq!(swap.lightning_symbol().unwrap(), expected);
+    }
+
     fn create_swap(order_side: Option<OrderSide>) -> Swap {
         Swap {
             id: "swap id".to_string(),
             pair: "L-BTC/BTC".to_string(),
-            lockupAddress: "".to_string(),
             status: "transaction.mempool".to_string(),
             orderSide: order_side.unwrap_or(OrderSide::Buy) as i32,
+            ..Default::default()
         }
     }
 }

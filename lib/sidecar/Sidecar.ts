@@ -1,20 +1,31 @@
-import { ClientDuplexStream, Metadata } from '@grpc/grpc-js';
+import {
+  ClientDuplexStream,
+  ClientReadableStream,
+  Metadata,
+} from '@grpc/grpc-js';
 import { Status } from '@grpc/grpc-js/build/src/constants';
 import child_process from 'node:child_process';
 import path from 'path';
-import BaseClient from '../BaseClient';
 import type { BaseClientEvents } from '../BaseClient';
+import BaseClient from '../BaseClient';
 import { ConfigType } from '../Config';
 import Logger, { LogLevel } from '../Logger';
 import { sleep } from '../PromiseUtils';
-import { formatError, getVersion } from '../Utils';
+import {
+  formatError,
+  getChainCurrency,
+  getVersion,
+  splitPairId,
+  stringify,
+} from '../Utils';
 import SwapInfos from '../api/SwapInfos';
 import { ClientStatus, SwapUpdateEvent } from '../consts/Enums';
-import { satToMsat } from '../lightning/ChannelUtils';
+import SwapRepository from '../db/repositories/SwapRepository';
 import { grpcOptions, unaryCall } from '../lightning/GrpcUtils';
 import { createSsl } from '../lightning/cln/Types';
 import { BoltzRClient } from '../proto/sidecar/boltzr_grpc_pb';
 import * as sidecarrpc from '../proto/sidecar/boltzr_pb';
+import { SendSwapUpdateRequest } from '../proto/sidecar/boltzr_pb';
 import EventHandler, { SwapUpdate } from '../service/EventHandler';
 import DecodedInvoice from './DecodedInvoice';
 
@@ -50,7 +61,7 @@ class Sidecar extends BaseClient<
 
   private static childProcess?: child_process.ChildProcessWithoutNullStreams;
 
-  private static maxConnectRetries = 10;
+  private static maxConnectRetries = 25;
   private static connectRetryTimeout = 500;
 
   private client?: BoltzRClient;
@@ -58,10 +69,12 @@ class Sidecar extends BaseClient<
 
   private swapInfos!: SwapInfos;
   private eventHandler!: EventHandler;
-  private subscribeSwapUpatesCall?: ClientDuplexStream<
+
+  private subscribeSwapUpdatesCall?: ClientDuplexStream<
     sidecarrpc.SwapUpdateRequest,
     sidecarrpc.SwapUpdateResponse
   >;
+  private subscribeSendSwapUpdatesCall?: ClientReadableStream<sidecarrpc.SendSwapUpdateRequest>;
 
   constructor(
     logger: Logger,
@@ -141,7 +154,8 @@ class Sidecar extends BaseClient<
   };
 
   public disconnect = (): void => {
-    this.subscribeSwapUpatesCall?.cancel();
+    this.subscribeSwapUpdatesCall?.cancel();
+    this.subscribeSendSwapUpdatesCall?.cancel();
 
     this.clearReconnectTimer();
 
@@ -291,21 +305,16 @@ class Sidecar extends BaseClient<
     );
   };
 
-  public fetchOffer = async (
-    currency: string,
-    offer: string,
-    amountSat: number,
-  ) => {
-    const req = new sidecarrpc.FetchInvoiceRequest();
-    req.setCurrency(currency);
-    req.setOffer(offer);
-    req.setAmountMsat(satToMsat(amountSat));
+  public isMarked = async (ip: string) => {
+    const req = new sidecarrpc.IsMarkedRequest();
+    req.setIp(ip);
 
-    const res = await this.unaryNodeCall<
-      sidecarrpc.FetchInvoiceRequest,
-      sidecarrpc.FetchInvoiceResponse.AsObject
-    >('fetchInvoice', req);
-    return res.invoice;
+    return (
+      await this.unaryNodeCall<
+        sidecarrpc.IsMarkedRequest,
+        sidecarrpc.IsMarkedResponse.AsObject
+      >('isMarked', req)
+    ).isMarked;
   };
 
   private subscribeSwapUpdates = () => {
@@ -367,13 +376,13 @@ class Sidecar extends BaseClient<
       return req;
     };
 
-    if (this.subscribeSwapUpatesCall !== undefined) {
-      this.subscribeSwapUpatesCall.cancel();
+    if (this.subscribeSwapUpdatesCall !== undefined) {
+      this.subscribeSwapUpdatesCall.cancel();
     }
 
-    this.subscribeSwapUpatesCall = this.client!.swapUpdate(this.clientMeta);
+    this.subscribeSwapUpdatesCall = this.client!.swapUpdate(this.clientMeta);
 
-    this.subscribeSwapUpatesCall.on(
+    this.subscribeSwapUpdatesCall.on(
       'data',
       async (data: sidecarrpc.SwapUpdateResponse) => {
         const status = (
@@ -388,35 +397,127 @@ class Sidecar extends BaseClient<
           return;
         }
 
-        this.subscribeSwapUpatesCall!.write(serializeSwapUpdate(status));
+        this.subscribeSwapUpdatesCall!.write(serializeSwapUpdate(status));
       },
     );
 
-    this.subscribeSwapUpatesCall.on('error', (err) => {
+    this.subscribeSwapUpdatesCall.on('error', (err) => {
       this.logger.warn(
         `Swap updates streaming call threw error: ${formatError(err)}`,
       );
-      this.subscribeSwapUpatesCall = undefined;
+      this.subscribeSwapUpdatesCall = undefined;
     });
 
-    this.subscribeSwapUpatesCall.on('end', () => {
+    this.subscribeSwapUpdatesCall.on('end', () => {
       this.eventHandler.removeAllListeners();
 
-      if (this.subscribeSwapUpatesCall !== undefined) {
-        this.subscribeSwapUpatesCall.cancel();
-        this.subscribeSwapUpatesCall = undefined;
+      if (this.subscribeSwapUpdatesCall !== undefined) {
+        this.subscribeSwapUpdatesCall.cancel();
+        this.subscribeSwapUpdatesCall = undefined;
       }
     });
 
     this.eventHandler.on('swap.update', async ({ id, status }) => {
-      if (this.subscribeSwapUpatesCall === undefined) {
+      if (this.subscribeSwapUpdatesCall === undefined) {
         return;
       }
 
-      this.subscribeSwapUpatesCall.write(serializeSwapUpdate([{ id, status }]));
+      this.subscribeSwapUpdatesCall.write(
+        serializeSwapUpdate([{ id, status }]),
+      );
 
       await this.sendWebHook(id, status.status);
     });
+  };
+
+  private subscribeSendSwapUpdates = () => {
+    if (this.subscribeSendSwapUpdatesCall !== undefined) {
+      this.subscribeSendSwapUpdatesCall.cancel();
+    }
+
+    this.subscribeSendSwapUpdatesCall = this.client!.sendSwapUpdate(
+      new SendSwapUpdateRequest(),
+      this.clientMeta,
+    );
+
+    this.subscribeSendSwapUpdatesCall.on(
+      'data',
+      async (data: sidecarrpc.SendSwapUpdateResponse) => {
+        const update = data.getUpdate();
+        if (update === undefined) {
+          return;
+        }
+
+        try {
+          await this.handleSentSwapUpdate(update);
+        } catch (e) {
+          this.logger.error(
+            `Handling sent swap update (${stringify(data.toObject())}) failed: ${formatError(e)}`,
+          );
+        }
+      },
+    );
+
+    this.subscribeSendSwapUpdatesCall.on('error', (err) => {
+      this.logger.warn(
+        `Send swap updates streaming call threw error: ${formatError(err)}`,
+      );
+      this.subscribeSwapUpdatesCall = undefined;
+    });
+
+    this.subscribeSendSwapUpdatesCall.on('end', () => {
+      if (this.subscribeSwapUpdatesCall !== undefined) {
+        this.subscribeSwapUpdatesCall.cancel();
+        this.subscribeSwapUpdatesCall = undefined;
+      }
+    });
+  };
+
+  private handleSentSwapUpdate = async (update: sidecarrpc.SwapUpdate) => {
+    switch (update.getStatus()) {
+      case SwapUpdateEvent.InvoiceFailedToPay: {
+        const swap = await SwapRepository.getSwap({
+          id: update.getId(),
+        });
+        if (swap === null) {
+          this.logger.warn(
+            `Could not find swap for update with id: ${update.getId()}`,
+          );
+          return;
+        }
+
+        const { base, quote } = splitPairId(swap.pair);
+        const chainCurrency = getChainCurrency(
+          base,
+          quote,
+          swap.orderSide,
+          false,
+        );
+
+        const currency =
+          this.eventHandler.nursery.currencies.get(chainCurrency);
+
+        if (currency !== undefined && currency.chainClient !== undefined) {
+          const wallet =
+            this.eventHandler.nursery.walletManager.wallets.get(chainCurrency)!;
+          currency.chainClient.removeOutputFilter(
+            wallet.decodeAddress(swap.lockupAddress),
+          );
+        }
+
+        this.eventHandler.nursery.emit(
+          SwapUpdateEvent.InvoiceFailedToPay,
+          swap,
+        );
+        return;
+      }
+      default: {
+        this.logger.warn(
+          `Got swap update that could not be handled: ${stringify(update.toObject())}`,
+        );
+        return;
+      }
+    }
   };
 
   public rescanMempool = async (symbols?: string[]) => {
@@ -484,6 +585,7 @@ class Sidecar extends BaseClient<
 
       if (withSubscriptions) {
         this.subscribeSwapUpdates();
+        this.subscribeSendSwapUpdates();
       }
 
       this.setClientStatus(ClientStatus.Connected);

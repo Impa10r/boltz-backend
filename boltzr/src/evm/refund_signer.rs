@@ -1,23 +1,22 @@
-use alloy::primitives::{Address, FixedBytes, Signature, U256};
+use alloy::primitives::{Address, FixedBytes, PrimitiveSignature, U256};
+use alloy::providers::RootProvider;
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller,
 };
 use alloy::providers::network::{AnyNetwork, EthereumWallet};
-use alloy::providers::RootProvider;
-use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
+use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::SolStruct;
 use anyhow::anyhow;
 use tracing::info;
 
 use crate::evm::contracts::erc20_swap::ERC20SwapContract;
 use crate::evm::contracts::ether_swap::EtherSwapContract;
-use crate::evm::contracts::{erc20_swap, ether_swap, SwapContract};
+use crate::evm::contracts::{SwapContract, erc20_swap, ether_swap};
 
 const MIN_VERSION: u8 = 3;
 const MAX_VERSION: u8 = 4;
 
-type AlloyTransport = alloy_transport_http::Http<reqwest::Client>;
 type AlloyProvider = FillProvider<
     JoinFill<
         JoinFill<
@@ -26,16 +25,15 @@ type AlloyProvider = FillProvider<
         >,
         WalletFiller<EthereumWallet>,
     >,
-    RootProvider<alloy_transport_http::Http<alloy_transport_http::Client>, AnyNetwork>,
-    alloy_transport_http::Http<alloy_transport_http::Client>,
+    RootProvider<AnyNetwork>,
     AnyNetwork,
 >;
 
 pub struct LocalRefundSigner {
     version: u8,
 
-    ether_swap: EtherSwapContract<AlloyTransport, AlloyProvider, AnyNetwork>,
-    erc20_swap: ERC20SwapContract<AlloyTransport, AlloyProvider, AnyNetwork>,
+    ether_swap: EtherSwapContract<AlloyProvider, AnyNetwork>,
+    erc20_swap: ERC20SwapContract<AlloyProvider, AnyNetwork>,
 }
 
 impl LocalRefundSigner {
@@ -86,7 +84,7 @@ impl LocalRefundSigner {
         amount: U256,
         token_address: Option<Address>,
         timeout: u64,
-    ) -> anyhow::Result<Signature> {
+    ) -> anyhow::Result<PrimitiveSignature> {
         info!(
             "Signing cooperative {} refund",
             if token_address.is_none() {
@@ -115,18 +113,17 @@ impl LocalRefundSigner {
             .eip712_signing_hash(self.ether_swap.eip712_domain())
         };
 
-        let sig = signer.sign_hash(&hash).await?;
-        Ok(Signature::from_bytes_and_parity(&sig.as_bytes(), sig.v())?)
+        Ok(signer.sign_hash(&hash).await?)
     }
 }
 
 #[cfg(test)]
 pub mod test {
+    use crate::evm::ContractAddresses;
+    use crate::evm::contracts::SwapContract;
     use crate::evm::contracts::erc20_swap::ERC20Swap;
     use crate::evm::contracts::ether_swap::EtherSwap;
-    use crate::evm::contracts::SwapContract;
     use crate::evm::refund_signer::{AlloyProvider, LocalRefundSigner};
-    use crate::evm::ContractAddresses;
     use alloy::primitives::{Address, FixedBytes, U256};
     use alloy::providers::network::{AnyNetwork, EthereumWallet, ReceiptResponse};
     use alloy::providers::{Provider, ProviderBuilder};
@@ -179,7 +176,7 @@ pub mod test {
         let contract = EtherSwap::new(ETHER_SWAP_ADDRESS.parse().unwrap(), provider.clone());
 
         let mut preimage_hash = FixedBytes::<32>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let amount = U256::from(1);
         let timelock: u64 = 1;
@@ -205,7 +202,7 @@ pub mod test {
                 amount,
                 claim_keys.address(),
                 U256::from(timelock),
-                refund_sig.v().y_parity_byte_non_eip155().unwrap(),
+                refund_sig.v() as u8 + 27,
                 refund_sig.r().into(),
                 refund_sig.s().into(),
             )
@@ -233,7 +230,6 @@ pub mod test {
             TOKEN_ADDRESS.parse().unwrap(),
             ProviderBuilder::new()
                 .network::<AnyNetwork>()
-                .with_recommended_fillers()
                 .wallet(EthereumWallet::from(claim_keys.clone()))
                 .on_http(PROVIDER.parse().unwrap()),
         );
@@ -242,7 +238,7 @@ pub mod test {
         let contract = ERC20Swap::new(ERC20_SWAP_ADDRESS.parse().unwrap(), provider.clone());
 
         let mut preimage_hash = FixedBytes::<32>::default();
-        rand::thread_rng().fill(&mut preimage_hash[..]);
+        rand::rng().fill(&mut preimage_hash[..]);
 
         let amount = U256::from(1);
         let timelock: u64 = 1;
@@ -298,7 +294,7 @@ pub mod test {
                 *token.address(),
                 claim_keys.address(),
                 U256::from(timelock),
-                refund_sig.v().y_parity_byte_non_eip155().unwrap(),
+                refund_sig.v() as u8 + 27,
                 refund_sig.r().into(),
                 refund_sig.s().into(),
             )
@@ -328,7 +324,6 @@ pub mod test {
         let signer = LocalRefundSigner::new(
             ProviderBuilder::new()
                 .network::<AnyNetwork>()
-                .with_recommended_fillers()
                 .wallet(EthereumWallet::from(claim_keys.clone()))
                 .on_http(PROVIDER.parse().unwrap()),
             &ContractAddresses {
@@ -342,7 +337,6 @@ pub mod test {
         let refund_keys = mnemonic_builder.index(1).unwrap().build().unwrap();
         let provider = ProviderBuilder::new()
             .network::<AnyNetwork>()
-            .with_recommended_fillers()
             .wallet(EthereumWallet::from(refund_keys.clone()))
             .on_http(PROVIDER.parse().unwrap());
 
