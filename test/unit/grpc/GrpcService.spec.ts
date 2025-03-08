@@ -1,13 +1,22 @@
 import { ServiceError } from '@grpc/grpc-js';
 import { randomBytes } from 'crypto';
 import Logger from '../../../lib/Logger';
-import { getHexBuffer, getHexString } from '../../../lib/Utils';
+import {
+  getHexBuffer,
+  getHexString,
+  removeHexPrefix,
+} from '../../../lib/Utils';
 import { CurrencyType } from '../../../lib/consts/Enums';
+import PendingEthereumTransaction from '../../../lib/db/models/PendingEthereumTransaction';
+import PendingEthereumTransactionRepository from '../../../lib/db/repositories/PendingEthereumTransactionRepository';
 import ReferralRepository from '../../../lib/db/repositories/ReferralRepository';
 import TransactionLabelRepository from '../../../lib/db/repositories/TransactionLabelRepository';
 import GrpcService from '../../../lib/grpc/GrpcService';
 import * as boltzrpc from '../../../lib/proto/boltzrpc_pb';
 import Service from '../../../lib/service/Service';
+import CreationHook from '../../../lib/swap/CreationHook';
+import EthereumManager from '../../../lib/wallet/ethereum/EthereumManager';
+import { Rsk } from '../../../lib/wallet/ethereum/EvmNetworks';
 
 const getInfoData = {
   method: 'getInfo',
@@ -108,6 +117,9 @@ const transformOutputs = (outputs: any[]) => {
 jest.mock('../../../lib/service/Service', () => {
   return jest.fn().mockImplementation(() => {
     return {
+      walletManager: {
+        ethereumManagers: [],
+      },
       elementsService: {
         unblindOutputs: mockUnblindOutputs,
         deriveBlindingKeys: mockDeriveBlindingKeys,
@@ -166,6 +178,8 @@ const createCallback = (
     callback(error, response);
   };
 };
+
+TransactionLabelRepository.getLabel = jest.fn().mockResolvedValue(null);
 
 describe('GrpcService', () => {
   const service = mockedService();
@@ -612,6 +626,148 @@ describe('GrpcService', () => {
     });
   });
 
+  describe('getPendingEvmTransactions', () => {
+    test('should get pending EVM transactions', async () => {
+      const txs = [
+        {
+          hash: '0x1234',
+          hex: '0x12345678',
+          nonce: 123,
+          etherAmount: 21_000_000_000,
+        },
+      ] as PendingEthereumTransaction[];
+
+      PendingEthereumTransactionRepository.getTransactions = jest
+        .fn()
+        .mockResolvedValue(txs);
+
+      const res = await new Promise<any>((resolve) => {
+        grpcService.getPendingEvmTransactions(
+          createCall({}),
+          createCallback((error, response) => {
+            expect(error).toEqual(null);
+            resolve(response.toObject());
+          }),
+        );
+      });
+
+      expect(res.transactionsList).toEqual([
+        {
+          label: '',
+          symbol: Rsk.symbol,
+          hash: getHexBuffer(removeHexPrefix(txs[0].hash)).toString('base64'),
+          hex: getHexBuffer(removeHexPrefix(txs[0].hex)).toString('base64'),
+          nonce: txs[0].nonce,
+          amountSent: txs[0].etherAmount.toString(),
+          amountReceived: '',
+        },
+      ]);
+
+      expect(
+        PendingEthereumTransactionRepository.getTransactions,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        PendingEthereumTransactionRepository.getTransactions,
+      ).toHaveBeenCalledWith();
+    });
+
+    test('should get pending EVM transactions with received amount', async () => {
+      const txs = [
+        {
+          hash: '0x1234',
+          hex: '0x12345678',
+          nonce: 123,
+          etherAmount: 21_000_000_000,
+        },
+      ] as PendingEthereumTransaction[];
+
+      PendingEthereumTransactionRepository.getTransactions = jest
+        .fn()
+        .mockResolvedValue(txs);
+
+      const claimedAmount = 123123123123n;
+      grpcService['service'].walletManager.ethereumManagers.push({
+        hasSymbol: jest.fn().mockReturnValue(true),
+        getClaimedAmount: jest.fn().mockResolvedValue(claimedAmount),
+      } as unknown as EthereumManager);
+
+      const res = await new Promise<any>((resolve) => {
+        grpcService.getPendingEvmTransactions(
+          createCall({}),
+          createCallback((error, response) => {
+            expect(error).toEqual(null);
+            resolve(response.toObject());
+          }),
+        );
+      });
+
+      expect(res.transactionsList).toEqual([
+        {
+          label: '',
+          symbol: Rsk.symbol,
+          hash: getHexBuffer(removeHexPrefix(txs[0].hash)).toString('base64'),
+          hex: getHexBuffer(removeHexPrefix(txs[0].hex)).toString('base64'),
+          nonce: txs[0].nonce,
+          amountSent: txs[0].etherAmount.toString(),
+          amountReceived: claimedAmount.toString(),
+        },
+      ]);
+    });
+
+    test('should get pending EVM transactions with label', async () => {
+      const txs = [
+        {
+          hash: '0x1234',
+          hex: '0x12345678',
+          nonce: 123,
+          etherAmount: 21_000_000_000,
+        },
+      ] as PendingEthereumTransaction[];
+
+      PendingEthereumTransactionRepository.getTransactions = jest
+        .fn()
+        .mockResolvedValue(txs);
+
+      const claimedAmount = 123123123123n;
+      grpcService['service'].walletManager.ethereumManagers.push({
+        hasSymbol: jest.fn().mockReturnValue(true),
+        getClaimedAmount: jest.fn().mockResolvedValue(claimedAmount),
+      } as unknown as EthereumManager);
+
+      TransactionLabelRepository.getLabel = jest.fn().mockResolvedValue({
+        symbol: Rsk.symbol,
+        label: 'some label',
+      });
+
+      const res = await new Promise<any>((resolve) => {
+        grpcService.getPendingEvmTransactions(
+          createCall({}),
+          createCallback((error, response) => {
+            expect(error).toEqual(null);
+            resolve(response.toObject());
+          }),
+        );
+      });
+
+      expect(res.transactionsList).toEqual([
+        {
+          symbol: Rsk.symbol,
+          label: 'some label',
+          hash: getHexBuffer(removeHexPrefix(txs[0].hash)).toString('base64'),
+          hex: getHexBuffer(removeHexPrefix(txs[0].hex)).toString('base64'),
+          nonce: txs[0].nonce,
+          amountSent: txs[0].etherAmount.toString(),
+          amountReceived: claimedAmount.toString(),
+        },
+      ]);
+
+      expect(TransactionLabelRepository.getLabel).toHaveBeenCalledTimes(1);
+      expect(TransactionLabelRepository.getLabel).toHaveBeenCalledWith(
+        txs[0].hash,
+      );
+    });
+  });
+
   describe('calculateTransactionFee', () => {
     test('should calculate transaction fee in sat/vbyte', async () => {
       const symbol = 'BTC';
@@ -677,6 +833,26 @@ describe('GrpcService', () => {
         symbol,
         transactionId,
       );
+    });
+  });
+
+  describe('swapCreationHook', () => {
+    test('should set swap creation hook stream', () => {
+      (service.swapManager.creationHook as any) = {
+        connectToStream: jest.fn(),
+      } as Partial<CreationHook>;
+
+      const stream = {
+        good: 'stream',
+      } as any;
+      grpcService.swapCreationHook(stream);
+
+      expect(
+        service.swapManager.creationHook.connectToStream,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        service.swapManager.creationHook.connectToStream,
+      ).toHaveBeenCalledWith(stream);
     });
   });
 

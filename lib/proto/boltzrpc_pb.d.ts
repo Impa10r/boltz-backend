@@ -1028,6 +1028,95 @@ export namespace GetLabelResponse {
     }
 }
 
+export class GetPendingEvmTransactionsRequest extends jspb.Message { 
+
+    serializeBinary(): Uint8Array;
+    toObject(includeInstance?: boolean): GetPendingEvmTransactionsRequest.AsObject;
+    static toObject(includeInstance: boolean, msg: GetPendingEvmTransactionsRequest): GetPendingEvmTransactionsRequest.AsObject;
+    static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+    static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+    static serializeBinaryToWriter(message: GetPendingEvmTransactionsRequest, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): GetPendingEvmTransactionsRequest;
+    static deserializeBinaryFromReader(message: GetPendingEvmTransactionsRequest, reader: jspb.BinaryReader): GetPendingEvmTransactionsRequest;
+}
+
+export namespace GetPendingEvmTransactionsRequest {
+    export type AsObject = {
+    }
+}
+
+export class GetPendingEvmTransactionsResponse extends jspb.Message { 
+    clearTransactionsList(): void;
+    getTransactionsList(): Array<GetPendingEvmTransactionsResponse.Transaction>;
+    setTransactionsList(value: Array<GetPendingEvmTransactionsResponse.Transaction>): GetPendingEvmTransactionsResponse;
+    addTransactions(value?: GetPendingEvmTransactionsResponse.Transaction, index?: number): GetPendingEvmTransactionsResponse.Transaction;
+
+    serializeBinary(): Uint8Array;
+    toObject(includeInstance?: boolean): GetPendingEvmTransactionsResponse.AsObject;
+    static toObject(includeInstance: boolean, msg: GetPendingEvmTransactionsResponse): GetPendingEvmTransactionsResponse.AsObject;
+    static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+    static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+    static serializeBinaryToWriter(message: GetPendingEvmTransactionsResponse, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): GetPendingEvmTransactionsResponse;
+    static deserializeBinaryFromReader(message: GetPendingEvmTransactionsResponse, reader: jspb.BinaryReader): GetPendingEvmTransactionsResponse;
+}
+
+export namespace GetPendingEvmTransactionsResponse {
+    export type AsObject = {
+        transactionsList: Array<GetPendingEvmTransactionsResponse.Transaction.AsObject>,
+    }
+
+
+    export class Transaction extends jspb.Message { 
+        getSymbol(): string;
+        setSymbol(value: string): Transaction;
+        getHash(): Uint8Array | string;
+        getHash_asU8(): Uint8Array;
+        getHash_asB64(): string;
+        setHash(value: Uint8Array | string): Transaction;
+        getHex(): Uint8Array | string;
+        getHex_asU8(): Uint8Array;
+        getHex_asB64(): string;
+        setHex(value: Uint8Array | string): Transaction;
+
+        hasLabel(): boolean;
+        clearLabel(): void;
+        getLabel(): string | undefined;
+        setLabel(value: string): Transaction;
+        getNonce(): number;
+        setNonce(value: number): Transaction;
+        getAmountSent(): string;
+        setAmountSent(value: string): Transaction;
+
+        hasAmountReceived(): boolean;
+        clearAmountReceived(): void;
+        getAmountReceived(): string | undefined;
+        setAmountReceived(value: string): Transaction;
+
+        serializeBinary(): Uint8Array;
+        toObject(includeInstance?: boolean): Transaction.AsObject;
+        static toObject(includeInstance: boolean, msg: Transaction): Transaction.AsObject;
+        static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+        static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+        static serializeBinaryToWriter(message: Transaction, writer: jspb.BinaryWriter): void;
+        static deserializeBinary(bytes: Uint8Array): Transaction;
+        static deserializeBinaryFromReader(message: Transaction, reader: jspb.BinaryReader): Transaction;
+    }
+
+    export namespace Transaction {
+        export type AsObject = {
+            symbol: string,
+            hash: Uint8Array | string,
+            hex: Uint8Array | string,
+            label?: string,
+            nonce: number,
+            amountSent: string,
+            amountReceived?: string,
+        }
+    }
+
+}
+
 export class GetReferralsRequest extends jspb.Message { 
 
     hasId(): boolean;
@@ -1359,6 +1448,157 @@ export namespace CalculateTransactionFeeResponse {
         RELATIVE_NOT_SET = 0,
         SAT_PER_VBYTE = 2,
         GWEI = 3,
+    }
+
+}
+
+export class SwapCreationResponse extends jspb.Message { 
+    getId(): string;
+    setId(value: string): SwapCreationResponse;
+    getAction(): SwapCreationResponse.Action;
+    setAction(value: SwapCreationResponse.Action): SwapCreationResponse;
+
+    serializeBinary(): Uint8Array;
+    toObject(includeInstance?: boolean): SwapCreationResponse.AsObject;
+    static toObject(includeInstance: boolean, msg: SwapCreationResponse): SwapCreationResponse.AsObject;
+    static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+    static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+    static serializeBinaryToWriter(message: SwapCreationResponse, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): SwapCreationResponse;
+    static deserializeBinaryFromReader(message: SwapCreationResponse, reader: jspb.BinaryReader): SwapCreationResponse;
+}
+
+export namespace SwapCreationResponse {
+    export type AsObject = {
+        id: string,
+        action: SwapCreationResponse.Action,
+    }
+
+    export enum Action {
+    ACCEPT = 0,
+    REJECT = 1,
+    }
+
+}
+
+export class SwapCreation extends jspb.Message { 
+    getId(): string;
+    setId(value: string): SwapCreation;
+    getSymbolSending(): string;
+    setSymbolSending(value: string): SwapCreation;
+    getSymbolReceiving(): string;
+    setSymbolReceiving(value: string): SwapCreation;
+
+    hasReferral(): boolean;
+    clearReferral(): void;
+    getReferral(): string | undefined;
+    setReferral(value: string): SwapCreation;
+
+    hasSubmarine(): boolean;
+    clearSubmarine(): void;
+    getSubmarine(): SwapCreation.Submarine | undefined;
+    setSubmarine(value?: SwapCreation.Submarine): SwapCreation;
+
+    hasReverse(): boolean;
+    clearReverse(): void;
+    getReverse(): SwapCreation.Reverse | undefined;
+    setReverse(value?: SwapCreation.Reverse): SwapCreation;
+
+    hasChain(): boolean;
+    clearChain(): void;
+    getChain(): SwapCreation.Chain | undefined;
+    setChain(value?: SwapCreation.Chain): SwapCreation;
+
+    getSwapCase(): SwapCreation.SwapCase;
+
+    serializeBinary(): Uint8Array;
+    toObject(includeInstance?: boolean): SwapCreation.AsObject;
+    static toObject(includeInstance: boolean, msg: SwapCreation): SwapCreation.AsObject;
+    static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+    static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+    static serializeBinaryToWriter(message: SwapCreation, writer: jspb.BinaryWriter): void;
+    static deserializeBinary(bytes: Uint8Array): SwapCreation;
+    static deserializeBinaryFromReader(message: SwapCreation, reader: jspb.BinaryReader): SwapCreation;
+}
+
+export namespace SwapCreation {
+    export type AsObject = {
+        id: string,
+        symbolSending: string,
+        symbolReceiving: string,
+        referral?: string,
+        submarine?: SwapCreation.Submarine.AsObject,
+        reverse?: SwapCreation.Reverse.AsObject,
+        chain?: SwapCreation.Chain.AsObject,
+    }
+
+
+    export class Submarine extends jspb.Message { 
+        getInvoiceAmount(): number;
+        setInvoiceAmount(value: number): Submarine;
+
+        serializeBinary(): Uint8Array;
+        toObject(includeInstance?: boolean): Submarine.AsObject;
+        static toObject(includeInstance: boolean, msg: Submarine): Submarine.AsObject;
+        static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+        static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+        static serializeBinaryToWriter(message: Submarine, writer: jspb.BinaryWriter): void;
+        static deserializeBinary(bytes: Uint8Array): Submarine;
+        static deserializeBinaryFromReader(message: Submarine, reader: jspb.BinaryReader): Submarine;
+    }
+
+    export namespace Submarine {
+        export type AsObject = {
+            invoiceAmount: number,
+        }
+    }
+
+    export class Reverse extends jspb.Message { 
+        getInvoiceAmount(): number;
+        setInvoiceAmount(value: number): Reverse;
+
+        serializeBinary(): Uint8Array;
+        toObject(includeInstance?: boolean): Reverse.AsObject;
+        static toObject(includeInstance: boolean, msg: Reverse): Reverse.AsObject;
+        static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+        static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+        static serializeBinaryToWriter(message: Reverse, writer: jspb.BinaryWriter): void;
+        static deserializeBinary(bytes: Uint8Array): Reverse;
+        static deserializeBinaryFromReader(message: Reverse, reader: jspb.BinaryReader): Reverse;
+    }
+
+    export namespace Reverse {
+        export type AsObject = {
+            invoiceAmount: number,
+        }
+    }
+
+    export class Chain extends jspb.Message { 
+        getUserLockAmount(): number;
+        setUserLockAmount(value: number): Chain;
+
+        serializeBinary(): Uint8Array;
+        toObject(includeInstance?: boolean): Chain.AsObject;
+        static toObject(includeInstance: boolean, msg: Chain): Chain.AsObject;
+        static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+        static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+        static serializeBinaryToWriter(message: Chain, writer: jspb.BinaryWriter): void;
+        static deserializeBinary(bytes: Uint8Array): Chain;
+        static deserializeBinaryFromReader(message: Chain, reader: jspb.BinaryReader): Chain;
+    }
+
+    export namespace Chain {
+        export type AsObject = {
+            userLockAmount: number,
+        }
+    }
+
+
+    export enum SwapCase {
+        SWAP_NOT_SET = 0,
+        SUBMARINE = 5,
+        REVERSE = 6,
+        CHAIN = 7,
     }
 
 }

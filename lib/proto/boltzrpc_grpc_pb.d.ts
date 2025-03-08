@@ -26,9 +26,11 @@ interface IBoltzService extends grpc.ServiceDefinition<grpc.UntypedServiceImplem
     listSwaps: IBoltzService_IListSwaps;
     rescan: IBoltzService_IRescan;
     getLabel: IBoltzService_IGetLabel;
+    getPendingEvmTransactions: IBoltzService_IGetPendingEvmTransactions;
     getReferrals: IBoltzService_IGetReferrals;
     setReferral: IBoltzService_ISetReferral;
     calculateTransactionFee: IBoltzService_ICalculateTransactionFee;
+    swapCreationHook: IBoltzService_ISwapCreationHook;
     setLogLevel: IBoltzService_ISetLogLevel;
     devHeapDump: IBoltzService_IDevHeapDump;
 }
@@ -195,6 +197,15 @@ interface IBoltzService_IGetLabel extends grpc.MethodDefinition<boltzrpc_pb.GetL
     responseSerialize: grpc.serialize<boltzrpc_pb.GetLabelResponse>;
     responseDeserialize: grpc.deserialize<boltzrpc_pb.GetLabelResponse>;
 }
+interface IBoltzService_IGetPendingEvmTransactions extends grpc.MethodDefinition<boltzrpc_pb.GetPendingEvmTransactionsRequest, boltzrpc_pb.GetPendingEvmTransactionsResponse> {
+    path: "/boltzrpc.Boltz/GetPendingEvmTransactions";
+    requestStream: false;
+    responseStream: false;
+    requestSerialize: grpc.serialize<boltzrpc_pb.GetPendingEvmTransactionsRequest>;
+    requestDeserialize: grpc.deserialize<boltzrpc_pb.GetPendingEvmTransactionsRequest>;
+    responseSerialize: grpc.serialize<boltzrpc_pb.GetPendingEvmTransactionsResponse>;
+    responseDeserialize: grpc.deserialize<boltzrpc_pb.GetPendingEvmTransactionsResponse>;
+}
 interface IBoltzService_IGetReferrals extends grpc.MethodDefinition<boltzrpc_pb.GetReferralsRequest, boltzrpc_pb.GetReferralsResponse> {
     path: "/boltzrpc.Boltz/GetReferrals";
     requestStream: false;
@@ -221,6 +232,15 @@ interface IBoltzService_ICalculateTransactionFee extends grpc.MethodDefinition<b
     requestDeserialize: grpc.deserialize<boltzrpc_pb.CalculateTransactionFeeRequest>;
     responseSerialize: grpc.serialize<boltzrpc_pb.CalculateTransactionFeeResponse>;
     responseDeserialize: grpc.deserialize<boltzrpc_pb.CalculateTransactionFeeResponse>;
+}
+interface IBoltzService_ISwapCreationHook extends grpc.MethodDefinition<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation> {
+    path: "/boltzrpc.Boltz/SwapCreationHook";
+    requestStream: true;
+    responseStream: true;
+    requestSerialize: grpc.serialize<boltzrpc_pb.SwapCreationResponse>;
+    requestDeserialize: grpc.deserialize<boltzrpc_pb.SwapCreationResponse>;
+    responseSerialize: grpc.serialize<boltzrpc_pb.SwapCreation>;
+    responseDeserialize: grpc.deserialize<boltzrpc_pb.SwapCreation>;
 }
 interface IBoltzService_ISetLogLevel extends grpc.MethodDefinition<boltzrpc_pb.SetLogLevelRequest, boltzrpc_pb.SetLogLevelResponse> {
     path: "/boltzrpc.Boltz/SetLogLevel";
@@ -262,9 +282,11 @@ export interface IBoltzServer extends grpc.UntypedServiceImplementation {
     listSwaps: grpc.handleUnaryCall<boltzrpc_pb.ListSwapsRequest, boltzrpc_pb.ListSwapsResponse>;
     rescan: grpc.handleUnaryCall<boltzrpc_pb.RescanRequest, boltzrpc_pb.RescanResponse>;
     getLabel: grpc.handleUnaryCall<boltzrpc_pb.GetLabelRequest, boltzrpc_pb.GetLabelResponse>;
+    getPendingEvmTransactions: grpc.handleUnaryCall<boltzrpc_pb.GetPendingEvmTransactionsRequest, boltzrpc_pb.GetPendingEvmTransactionsResponse>;
     getReferrals: grpc.handleUnaryCall<boltzrpc_pb.GetReferralsRequest, boltzrpc_pb.GetReferralsResponse>;
     setReferral: grpc.handleUnaryCall<boltzrpc_pb.SetReferralRequest, boltzrpc_pb.SetReferralResponse>;
     calculateTransactionFee: grpc.handleUnaryCall<boltzrpc_pb.CalculateTransactionFeeRequest, boltzrpc_pb.CalculateTransactionFeeResponse>;
+    swapCreationHook: grpc.handleBidiStreamingCall<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation>;
     setLogLevel: grpc.handleUnaryCall<boltzrpc_pb.SetLogLevelRequest, boltzrpc_pb.SetLogLevelResponse>;
     devHeapDump: grpc.handleUnaryCall<boltzrpc_pb.DevHeapDumpRequest, boltzrpc_pb.DevHeapDumpResponse>;
 }
@@ -324,6 +346,9 @@ export interface IBoltzClient {
     getLabel(request: boltzrpc_pb.GetLabelRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetLabelResponse) => void): grpc.ClientUnaryCall;
     getLabel(request: boltzrpc_pb.GetLabelRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetLabelResponse) => void): grpc.ClientUnaryCall;
     getLabel(request: boltzrpc_pb.GetLabelRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetLabelResponse) => void): grpc.ClientUnaryCall;
+    getPendingEvmTransactions(request: boltzrpc_pb.GetPendingEvmTransactionsRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetPendingEvmTransactionsResponse) => void): grpc.ClientUnaryCall;
+    getPendingEvmTransactions(request: boltzrpc_pb.GetPendingEvmTransactionsRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetPendingEvmTransactionsResponse) => void): grpc.ClientUnaryCall;
+    getPendingEvmTransactions(request: boltzrpc_pb.GetPendingEvmTransactionsRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetPendingEvmTransactionsResponse) => void): grpc.ClientUnaryCall;
     getReferrals(request: boltzrpc_pb.GetReferralsRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetReferralsResponse) => void): grpc.ClientUnaryCall;
     getReferrals(request: boltzrpc_pb.GetReferralsRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetReferralsResponse) => void): grpc.ClientUnaryCall;
     getReferrals(request: boltzrpc_pb.GetReferralsRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetReferralsResponse) => void): grpc.ClientUnaryCall;
@@ -333,6 +358,9 @@ export interface IBoltzClient {
     calculateTransactionFee(request: boltzrpc_pb.CalculateTransactionFeeRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.CalculateTransactionFeeResponse) => void): grpc.ClientUnaryCall;
     calculateTransactionFee(request: boltzrpc_pb.CalculateTransactionFeeRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.CalculateTransactionFeeResponse) => void): grpc.ClientUnaryCall;
     calculateTransactionFee(request: boltzrpc_pb.CalculateTransactionFeeRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.CalculateTransactionFeeResponse) => void): grpc.ClientUnaryCall;
+    swapCreationHook(): grpc.ClientDuplexStream<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation>;
+    swapCreationHook(options: Partial<grpc.CallOptions>): grpc.ClientDuplexStream<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation>;
+    swapCreationHook(metadata: grpc.Metadata, options?: Partial<grpc.CallOptions>): grpc.ClientDuplexStream<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation>;
     setLogLevel(request: boltzrpc_pb.SetLogLevelRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.SetLogLevelResponse) => void): grpc.ClientUnaryCall;
     setLogLevel(request: boltzrpc_pb.SetLogLevelRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.SetLogLevelResponse) => void): grpc.ClientUnaryCall;
     setLogLevel(request: boltzrpc_pb.SetLogLevelRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.SetLogLevelResponse) => void): grpc.ClientUnaryCall;
@@ -397,6 +425,9 @@ export class BoltzClient extends grpc.Client implements IBoltzClient {
     public getLabel(request: boltzrpc_pb.GetLabelRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetLabelResponse) => void): grpc.ClientUnaryCall;
     public getLabel(request: boltzrpc_pb.GetLabelRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetLabelResponse) => void): grpc.ClientUnaryCall;
     public getLabel(request: boltzrpc_pb.GetLabelRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetLabelResponse) => void): grpc.ClientUnaryCall;
+    public getPendingEvmTransactions(request: boltzrpc_pb.GetPendingEvmTransactionsRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetPendingEvmTransactionsResponse) => void): grpc.ClientUnaryCall;
+    public getPendingEvmTransactions(request: boltzrpc_pb.GetPendingEvmTransactionsRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetPendingEvmTransactionsResponse) => void): grpc.ClientUnaryCall;
+    public getPendingEvmTransactions(request: boltzrpc_pb.GetPendingEvmTransactionsRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetPendingEvmTransactionsResponse) => void): grpc.ClientUnaryCall;
     public getReferrals(request: boltzrpc_pb.GetReferralsRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetReferralsResponse) => void): grpc.ClientUnaryCall;
     public getReferrals(request: boltzrpc_pb.GetReferralsRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetReferralsResponse) => void): grpc.ClientUnaryCall;
     public getReferrals(request: boltzrpc_pb.GetReferralsRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.GetReferralsResponse) => void): grpc.ClientUnaryCall;
@@ -406,6 +437,8 @@ export class BoltzClient extends grpc.Client implements IBoltzClient {
     public calculateTransactionFee(request: boltzrpc_pb.CalculateTransactionFeeRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.CalculateTransactionFeeResponse) => void): grpc.ClientUnaryCall;
     public calculateTransactionFee(request: boltzrpc_pb.CalculateTransactionFeeRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.CalculateTransactionFeeResponse) => void): grpc.ClientUnaryCall;
     public calculateTransactionFee(request: boltzrpc_pb.CalculateTransactionFeeRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.CalculateTransactionFeeResponse) => void): grpc.ClientUnaryCall;
+    public swapCreationHook(options?: Partial<grpc.CallOptions>): grpc.ClientDuplexStream<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation>;
+    public swapCreationHook(metadata?: grpc.Metadata, options?: Partial<grpc.CallOptions>): grpc.ClientDuplexStream<boltzrpc_pb.SwapCreationResponse, boltzrpc_pb.SwapCreation>;
     public setLogLevel(request: boltzrpc_pb.SetLogLevelRequest, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.SetLogLevelResponse) => void): grpc.ClientUnaryCall;
     public setLogLevel(request: boltzrpc_pb.SetLogLevelRequest, metadata: grpc.Metadata, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.SetLogLevelResponse) => void): grpc.ClientUnaryCall;
     public setLogLevel(request: boltzrpc_pb.SetLogLevelRequest, metadata: grpc.Metadata, options: Partial<grpc.CallOptions>, callback: (error: grpc.ServiceError | null, response: boltzrpc_pb.SetLogLevelResponse) => void): grpc.ClientUnaryCall;

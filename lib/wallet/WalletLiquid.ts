@@ -20,14 +20,6 @@ class WalletLiquid extends Wallet {
     network: Network,
   ) {
     super(logger, CurrencyType.Liquid, walletProvider, network);
-
-    if (this.supportsDiscountCT) {
-      this.logger.info(`${this.serviceName()} wallet supports Discount CT`);
-    }
-  }
-
-  public get supportsDiscountCT(): boolean {
-    return true;
   }
 
   public deriveBlindingKeyFromScript = (

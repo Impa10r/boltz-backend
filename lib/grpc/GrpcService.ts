@@ -1,19 +1,27 @@
-import { handleUnaryCall } from '@grpc/grpc-js';
+import { ServerDuplexStream, handleUnaryCall } from '@grpc/grpc-js';
 import { Transaction as TransactionLiquid } from 'liquidjs-lib';
 import process from 'process';
 import { parseTransaction } from '../Core';
 import { dumpHeap } from '../HeapDump';
 import Logger, { LogLevel as BackendLevel } from '../Logger';
 import { wait } from '../PromiseUtils';
-import { getHexString, getUnixTime, stringify } from '../Utils';
+import {
+  getHexBuffer,
+  getHexString,
+  getUnixTime,
+  removeHexPrefix,
+  stringify,
+} from '../Utils';
 import { CurrencyType, swapTypeToPrettyString } from '../consts/Enums';
 import Referral, { ReferralConfig } from '../db/models/Referral';
+import PendingEthereumTransactionRepository from '../db/repositories/PendingEthereumTransactionRepository';
 import ReferralRepository from '../db/repositories/ReferralRepository';
 import TransactionLabelRepository from '../db/repositories/TransactionLabelRepository';
 import * as boltzrpc from '../proto/boltzrpc_pb';
 import { LogLevel } from '../proto/boltzrpc_pb';
 import Service from '../service/Service';
 import Sidecar from '../sidecar/Sidecar';
+import { Rsk } from '../wallet/ethereum/EvmNetworks';
 
 class GrpcService {
   constructor(
@@ -380,6 +388,52 @@ class GrpcService {
     });
   };
 
+  public getPendingEvmTransactions: handleUnaryCall<
+    boltzrpc.GetPendingEvmTransactionsRequest,
+    boltzrpc.GetPendingEvmTransactionsResponse
+  > = async (call, callback) => {
+    await this.handleCallback(call, callback, async () => {
+      const response = new boltzrpc.GetPendingEvmTransactionsResponse();
+      const txsGrpcList = response.getTransactionsList();
+
+      for (const tx of await PendingEthereumTransactionRepository.getTransactions()) {
+        const txGrpc =
+          new boltzrpc.GetPendingEvmTransactionsResponse.Transaction();
+
+        const symbol = Rsk.symbol;
+
+        txGrpc.setSymbol(symbol);
+        txGrpc.setHash(getHexBuffer(removeHexPrefix(tx.hash)));
+        txGrpc.setHex(getHexBuffer(removeHexPrefix(tx.hex)));
+        txGrpc.setNonce(tx.nonce);
+        txGrpc.setAmountSent(tx.etherAmount.toString());
+
+        {
+          const label = await TransactionLabelRepository.getLabel(tx.hash);
+          if (label !== null) {
+            txGrpc.setLabel(label.label);
+          }
+        }
+
+        {
+          const manager = this.service.walletManager.ethereumManagers.find(
+            (m) => m.hasSymbol(symbol),
+          );
+          if (manager !== undefined) {
+            const received = await manager.getClaimedAmount(tx.hex);
+            if (received !== undefined) {
+              txGrpc.setAmountReceived(received.toString());
+            }
+          }
+        }
+
+        txsGrpcList.push(txGrpc);
+      }
+
+      return response;
+    });
+  };
+
   public setLogLevel: handleUnaryCall<
     boltzrpc.SetLogLevelRequest,
     boltzrpc.SetLogLevelResponse
@@ -456,6 +510,15 @@ class GrpcService {
 
       return res;
     });
+  };
+
+  public swapCreationHook = (
+    call: ServerDuplexStream<
+      boltzrpc.SwapCreationResponse,
+      boltzrpc.SwapCreation
+    >,
+  ) => {
+    this.service.swapManager.creationHook.connectToStream(call);
   };
 
   public getReferrals: handleUnaryCall<

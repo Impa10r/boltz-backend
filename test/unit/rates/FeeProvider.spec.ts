@@ -10,7 +10,6 @@ import Referral from '../../../lib/db/models/Referral';
 import FeeProvider from '../../../lib/rates/FeeProvider';
 import DataAggregator from '../../../lib/rates/data/DataAggregator';
 import { ExtraFees } from '../../../lib/service/Service';
-import WalletLiquid from '../../../lib/wallet/WalletLiquid';
 import WalletManager from '../../../lib/wallet/WalletManager';
 import { Ethereum } from '../../../lib/wallet/ethereum/EvmNetworks';
 
@@ -38,14 +37,6 @@ const MockedDataAggregator = <jest.Mock<DataAggregator>>DataAggregator;
 
 jest.mock('../../../lib/wallet/WalletManager', () => {
   return jest.fn().mockImplementation(() => ({
-    wallets: new Map([
-      [
-        'L-BTC',
-        {
-          supportsDiscountCT: false,
-        },
-      ],
-    ]),
     ethereumManagers: [
       {
         networkDetails: Ethereum,
@@ -331,6 +322,46 @@ describe('FeeProvider', () => {
         ),
       ).toEqual(1.2);
     });
+
+    test('should apply directional premiums for chain swaps', () => {
+      const referral = {
+        premium: jest.fn().mockImplementation((pair, type, orderSide) => {
+          if (orderSide === OrderSide.BUY) return -50;
+          return 50;
+        }),
+      } as unknown as Referral;
+
+      expect(
+        feeProvider.getPercentageFee(
+          'BTC/BTC',
+          OrderSide.BUY,
+          SwapType.Chain,
+          PercentageFeeType.Calculation,
+          referral,
+        ),
+      ).toEqual(0.005);
+
+      expect(
+        feeProvider.getPercentageFee(
+          'BTC/BTC',
+          OrderSide.SELL,
+          SwapType.Chain,
+          PercentageFeeType.Calculation,
+          referral,
+        ),
+      ).toEqual(0.025);
+
+      expect(referral.premium).toHaveBeenCalledWith(
+        'BTC/BTC',
+        SwapType.Chain,
+        OrderSide.BUY,
+      );
+      expect(referral.premium).toHaveBeenCalledWith(
+        'BTC/BTC',
+        SwapType.Chain,
+        OrderSide.SELL,
+      );
+    });
   });
 
   test('should update miner fees', async () => {
@@ -412,24 +443,6 @@ describe('FeeProvider', () => {
         },
       },
     });
-  });
-
-  test('should honor discount CT flag of wallet', async () => {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error
-    (walletManager.wallets.get('L-BTC')! as WalletLiquid).supportsDiscountCT =
-      false;
-
-    await feeProvider.updateMinerFees('L-BTC');
-    expect(feeProvider.minerFees.get('L-BTC')).toMatchSnapshot();
-
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error
-    (walletManager.wallets.get('L-BTC')! as WalletLiquid).supportsDiscountCT =
-      true;
-
-    await feeProvider.updateMinerFees('L-BTC');
-    expect(feeProvider.minerFees.get('L-BTC')).toMatchSnapshot();
   });
 
   describe('getFees', () => {
