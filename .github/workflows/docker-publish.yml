@@ -31,4 +31,5 @@ jobs:
       - name: Push backend image
         run:
           ./docker/build.py buildx --platform linux/amd64 --no-latest --branch
-          ${GITHUB_REF##*/} impalor
+          --organisation impalor
+          ${GITHUB_REF##*/} boltz
